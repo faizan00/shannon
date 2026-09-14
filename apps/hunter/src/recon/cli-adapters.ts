@@ -388,13 +388,14 @@ class UrlArchiveAdapter implements ToolAdapter<{ readonly domain: string }> {
   constructor(
     readonly name: 'gau' | 'waybackurls',
     private readonly buildArgs: (domain: string) => readonly string[],
+    private readonly identityCheck: { readonly versionArgs: readonly string[]; readonly expectedSignature: RegExp },
   ) {}
 
   capability(): Promise<ToolCapability> {
     return verifyToolIdentity({
       binary: this.name,
-      versionArgs: ['-version'],
-      expectedSignature: new RegExp(this.name, 'i'),
+      versionArgs: this.identityCheck.versionArgs,
+      expectedSignature: this.identityCheck.expectedSignature,
     });
   }
 
@@ -422,13 +423,25 @@ class UrlArchiveAdapter implements ToolAdapter<{ readonly domain: string }> {
 
 export class GauAdapter extends UrlArchiveAdapter {
   constructor() {
-    super('gau', (domain) => [domain]);
+    // gau's flag parser is strict about long-flag syntax: `-version`
+    // (single dash) is read as bundled shorthand flags and rejected with
+    // "unknown shorthand flag: 'v' in -version" — verified against a real
+    // installed binary, not assumed. `--version` is the real, working flag
+    // and prints "gau version: <x.y.z>".
+    super('gau', (domain) => [domain], { versionArgs: ['--version'], expectedSignature: /gau/i });
   }
 }
 
 export class WaybackurlsAdapter extends UrlArchiveAdapter {
   constructor() {
-    super('waybackurls', (domain) => [domain]);
+    // waybackurls has no version flag at all (`-version` errors with "flag
+    // provided but not defined") — verified against a real installed
+    // binary. `-h` exits 0 and prints "Usage of waybackurls:", which is a
+    // real, if generic, identity signal: Go's flag package derives that
+    // line from the binary's own on-disk name, the same pattern
+    // `AmassAdapter` already uses `-h` for (amass's `-version` prints only
+    // a bare version number with no identifying text).
+    super('waybackurls', (domain) => [domain], { versionArgs: ['-h'], expectedSignature: /waybackurls/i });
   }
 }
 
@@ -539,7 +552,16 @@ export class KatanaAdapter implements ToolAdapter<{ readonly url: string }> {
   readonly timeoutMs = 60_000;
 
   capability(): Promise<ToolCapability> {
-    return verifyToolIdentity({ binary: 'katana', versionArgs: ['-version'], expectedSignature: /katana/i });
+    // katana's real `-version` output is an ASCII-art banner plus
+    // "Current version: vX.Y.Z" — the literal string "katana" never
+    // appears anywhere in it, so `/katana/i` never matched a genuinely
+    // installed binary (found against a real install, not assumed).
+    // "projectdiscovery.io" does appear, and is what every ProjectDiscovery
+    // tool's banner shares — enough to confirm this is a real ProjectDiscovery
+    // binary and not an unrelated same-named program (there is, for
+    // example, an unrelated "katana" web-crawler-unrelated tool by that
+    // name in the wild), without depending on brittle ASCII-art matching.
+    return verifyToolIdentity({ binary: 'katana', versionArgs: ['-version'], expectedSignature: /projectdiscovery/i });
   }
 
   async run(input: { readonly url: string }): Promise<ToolRunResult> {
@@ -591,7 +613,10 @@ export class NaabuAdapter implements ToolAdapter<{ readonly host: string }> {
   readonly timeoutMs = 60_000;
 
   capability(): Promise<ToolCapability> {
-    return verifyToolIdentity({ binary: 'naabu', versionArgs: ['-version'], expectedSignature: /naabu/i });
+    // Same real, verified issue as `KatanaAdapter`: naabu's `-version`
+    // banner is ASCII art plus "Current Version: x.y.z" and never spells
+    // out "naabu" as text, so `/naabu/i` never matched a genuine install.
+    return verifyToolIdentity({ binary: 'naabu', versionArgs: ['-version'], expectedSignature: /projectdiscovery/i });
   }
 
   async run(input: { readonly host: string }): Promise<ToolRunResult> {

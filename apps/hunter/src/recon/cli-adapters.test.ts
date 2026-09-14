@@ -189,6 +189,40 @@ test('ChaosAdapter.capability() requires both the binary and an API key', async 
   assert.equal(capability.available, false);
 });
 
+// === Regression: found by actually installing every tool this package has
+// an adapter for and running capability() for real, not just against
+// whatever happened to be present when these adapters were first written.
+// katana/naabu's real `-version` output is ASCII art + "Current
+// [Vv]ersion: x.y.z" and never spells out the tool's own name as text, so
+// the original `/katana/i`/`/naabu/i` signatures never matched a genuine
+// install. gau's real flag is `--version` (long-form only — `-version` is
+// parsed as bundled shorthand flags and rejected); waybackurls has no
+// version flag at all and needs `-h` instead (same reason `AmassAdapter`
+// already uses `-h`). Each test below is environment-adaptive, exactly like
+// the existing `AmassAdapter`/`NucleiAdapter` "reflects reality" tests —
+// it only asserts `available: true` when the tool is genuinely on PATH, so
+// it stays honest on a machine without these tools too. ===
+
+test('KatanaAdapter.capability() reflects reality on this machine', async () => {
+  const capability = await new KatanaAdapter().capability();
+  assert.equal(capability.available, await isToolInstalled('katana'));
+});
+
+test('NaabuAdapter.capability() reflects reality on this machine', async () => {
+  const capability = await new NaabuAdapter().capability();
+  assert.equal(capability.available, await isToolInstalled('naabu'));
+});
+
+test('GauAdapter.capability() reflects reality on this machine', async () => {
+  const capability = await new GauAdapter().capability();
+  assert.equal(capability.available, await isToolInstalled('gau'));
+});
+
+test('WaybackurlsAdapter.capability() reflects reality on this machine', async () => {
+  const capability = await new WaybackurlsAdapter().capability();
+  assert.equal(capability.available, await isToolInstalled('waybackurls'));
+});
+
 // === spawnCapture: real process execution, but only ever against harmless local commands ===
 
 test('spawnCapture returns structured output for a successful local command', async () => {

@@ -197,15 +197,38 @@ turned out to be one JSON object per matched line, not a single summary
 object with a `results` array, and OWASP Amass v5's `-version` prints only
 a bare version number with no identifying text, so its identity check uses
 `-h` instead) and its **`capability()`** check, which is always safe — it
-inspects the tool's own version/help output, never a target. On the
-development machine, `amass`, `ffuf`, and `nuclei` are genuinely installed;
-`subfinder`, `chaos`, `gau`, `waybackurls`, `katana`, and `naabu` are not,
-and their capability checks correctly report that. `FfufAdapter` is the one
+inspects the tool's own version/help output, never a target. All eleven
+adapters' identity checks (`KatanaAdapter`/`NaabuAdapter`/`GauAdapter`/
+`WaybackurlsAdapter` included) have now been verified against genuinely
+installed binaries, not just assumed correct from reading the tool's
+`--help`: `katana`/`naabu`'s real `-version` output is ASCII art plus
+"Current [Vv]ersion: x.y.z" and never spells out the tool's own name as
+text, so their original `/katana/i`/`/naabu/i` signatures never matched a
+real install and had to become `/projectdiscovery/i`; `gau`'s working flag
+is `--version` (long-form only — `-version` is parsed as bundled shorthand
+flags and rejected); `waybackurls` has no version flag at all and needs
+`-h` instead, the same reason `amass` does. `FfufAdapter` is the one
 adapter the test suite genuinely **executes** — against
 `testing/local-app-server.ts` on `127.0.0.1`, never an external host.
 `nuclei`'s adapter always passes `-duc` (disable-update-check), including
 during its own capability check, so a mere capability probe can never
 trigger an outbound template-update request.
+
+**A tool being physically installed is not the same as this package being
+able to see it.** `isToolInstalled`/`verifyToolIdentity` shell out to
+`which <binary>`, which only finds what is on the *current process's*
+`PATH` — a Go toolchain's `go install` default (`$(go env GOPATH)/bin`,
+typically `~/go/bin`) is not on `PATH` for every shell (a login/interactive
+shell sourcing `.zshrc`/`.bashrc` may have it; a plain non-interactive
+subprocess spawning this package's CLI may not), and every capability
+check above will honestly — and misleadingly — report `UNAVAILABLE` for a
+tool that is genuinely present on disk but simply not resolvable from
+wherever this process's `PATH` happens to come from. Before trusting a
+`capability()`/environment-readiness result, confirm the invoking
+process's own `PATH` actually includes wherever these tools were
+installed — this is an operational check, not something the package can
+fix from inside itself (it deliberately never assumes a tool's location,
+only ever asks the shell to resolve it).
 
 These adapters are wired into the adaptive loop's own execution path as an
 opt-in (see "The action -> tool bridge" below) — none of them run unless a

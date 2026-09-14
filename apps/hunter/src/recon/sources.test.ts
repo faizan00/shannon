@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { promisify } from 'node:util';
 import {
   isToolInstalled,
   LocalFixtureReconSource,
@@ -10,6 +12,8 @@ import {
   runReconSourcesStreaming,
   verifyToolIdentity,
 } from './sources.js';
+
+const execFileAsync = promisify(execFile);
 
 async function withTempFixture<T>(content: unknown, fn: (path: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), 'hunter-recon-source-test-'));
@@ -357,19 +361,27 @@ test('verifyToolIdentity confirms a real installed tool when both presence and s
   assert.ok(capability.version);
 });
 
-test('verifyToolIdentity catches a same-named-but-different binary (e.g. Python httpx instead of ProjectDiscovery httpx)', async () => {
+test('verifyToolIdentity catches a same-named-but-different binary (e.g. Python httpx instead of ProjectDiscovery httpx), and confirms the real one when it genuinely resolves first', async () => {
   if (!(await isToolInstalled('httpx'))) {
     return;
   }
-  // ProjectDiscovery's httpx prints a banner containing "httpx" and a
-  // version on `-version`; a same-named unrelated tool will not.
   const capability = await verifyToolIdentity({
     binary: 'httpx',
     versionArgs: ['-version'],
     expectedSignature: /projectdiscovery/i,
   });
-  // This assertion documents reality rather than assuming it: on a system
-  // where the installed `httpx` is not ProjectDiscovery's tool, identity
-  // verification must correctly say so instead of silently proceeding.
-  assert.equal(capability.available, false);
+  // Derived from reality, not hardcoded: whichever "httpx" this machine's
+  // PATH resolves to right now, `capability.available` must agree with
+  // whether that binary's own -version output actually says
+  // "projectdiscovery" -- true when a real ProjectDiscovery install
+  // legitimately comes first on PATH, false when an unrelated same-named
+  // tool (e.g. Python's httpx client) does. A hardcoded `false` here would
+  // itself be exactly the kind of environment-baked assumption this test
+  // exists to catch elsewhere.
+  const raw = await execFileAsync('httpx', ['-version']).catch((error) => ({
+    stdout: (error as { stdout?: string }).stdout ?? '',
+    stderr: (error as { stderr?: string }).stderr ?? '',
+  }));
+  const isRealProjectDiscoveryHttpx = /projectdiscovery/i.test(`${raw.stdout}\n${raw.stderr}`);
+  assert.equal(capability.available, isRealProjectDiscoveryHttpx);
 });
