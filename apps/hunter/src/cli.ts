@@ -30,6 +30,7 @@ import { H1BrainSnapshotProvider } from './discovery/h1-brain-provider.js';
 import { assessProgram, assessPrograms } from './discovery/opportunity.js';
 import { explainSelection, rankPrograms, selectBestProgram } from './discovery/scoring.js';
 import { runSensitivityAnalysis } from './discovery/sensitivity.js';
+import { SingleProgramDiscoveryProvider } from './discovery/single-program-provider.js';
 import type { ProgramDiscoveryProvider } from './discovery/types.js';
 import { prioritizeRefresh } from './discovery/value-of-information.js';
 import { ingestShannonOutput, parseShannonReport } from './ingestion/shannon-output.js';
@@ -45,6 +46,7 @@ import { validateTarget } from './scope/validator.js';
 import { buildShannonInvocation } from './shannon/config.js';
 import { planInvocation } from './shannon/invoke.js';
 import { loadCheckpoint } from './state/checkpoint.js';
+import { loadEngagement } from './state/engagement-store.js';
 import {
   DEFAULT_REFRESH_POLICY,
   loadProgramIntel,
@@ -158,7 +160,24 @@ async function runIngest(flags: Map<string, string>): Promise<number> {
   return 0;
 }
 
+/**
+ * `--engagement <file>` is the decoupled, non-HackerOne-specific entry
+ * point: one already-known, already-selected engagement definition (see
+ * `discovery/single-program-provider.ts`) rather than a multi-candidate
+ * dataset to rank. Mutually exclusive with `--programs`/`--provider` — a
+ * caller who already knows the target does not need discovery/ranking's
+ * machinery at all, only the scope/ROE/authorization/execution engine
+ * behind it, and this is what lets them reach it without ever touching
+ * `discovery/h1-brain-provider.ts` or the bundled synthetic dataset.
+ */
 function buildDiscoveryProvider(flags: Map<string, string>): ProgramDiscoveryProvider {
+  const engagementPath = flags.get('engagement');
+  if (engagementPath !== undefined) {
+    if (flags.has('programs') || flags.has('provider')) {
+      throw new Error('--engagement cannot be combined with --programs/--provider — pick exactly one discovery source');
+    }
+    return new SingleProgramDiscoveryProvider(engagementPath);
+  }
   const programsPath = requireFlag(flags, 'programs');
   const kind = flags.get('provider') ?? 'fixture';
   if (kind === 'h1-brain') {
@@ -544,8 +563,21 @@ async function runHunt(flags: Map<string, string>): Promise<number> {
   const maxActions = flags.get('max-actions');
 
   if (flags.has('resume')) {
-    const checkpoint = await loadCheckpoint(workspaceDir, engagementId);
-    if (!checkpoint.ok || checkpoint.value.round === 0) {
+    // An engagement "exists" if its own state file is present, regardless of
+    // whether checkpoint.json happens to parse right now — a corrupted
+    // checkpoint on a real, in-progress engagement is a recoverable
+    // condition `runAdaptiveHunt` itself quarantines and rebuilds from
+    // `observations.jsonl` (see `state/checkpoint.ts:quarantineCorruptedCheckpoint`),
+    // never grounds for --resume to report "no existing engagement" and stop
+    // before that recovery ever gets a chance to run. Falling back to the
+    // checkpoint's own `round` covers the (unlikely) legacy case of a
+    // checkpoint with real progress but no engagement state file.
+    const [engagement, checkpoint] = await Promise.all([
+      loadEngagement(workspaceDir, engagementId),
+      loadCheckpoint(workspaceDir, engagementId),
+    ]);
+    const engagementExists = engagement.ok || (checkpoint.ok && checkpoint.value.round > 0);
+    if (!engagementExists) {
       printJson({
         ok: false,
         error: `no existing engagement "${engagementId}" found under "${workspaceDir}" to resume`,

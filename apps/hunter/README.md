@@ -309,11 +309,12 @@ finding via the policy-gated fallback.
 
 ```
 select shannon action -> checkShannonEligibility (real local repo?) ->
-buildShannonInvocation (exact verified command) -> planShannonAction
-(always safe) -> [explicit liveShannon.confirmed:true] ->
-executeShannonAction (real spawn, captured stdout/stderr/exit code,
-report.json discovery under the workspace) -> ingestShannonOutput ->
-observations -> world-model/hypothesis update
+buildShannonInvocation (exact verified command, incl. a deterministic
+--workspace name — see below) -> planShannonAction (always safe) ->
+[explicit liveShannon.confirmed:true] -> executeShannonAction (real spawn,
+captured stdout/stderr/exit code, report.json discovery under the target
+repo) -> ingestShannonOutput -> observations -> world-model/hypothesis
+update
 ```
 
 `executeShannonAction` is the only function in this entire package that can
@@ -327,7 +328,41 @@ than a casual command-line flag. `shannon/execution-adapter.test.ts`
 verifies the full lifecycle (argument construction, stdout/stderr capture,
 timeout/kill handling, `report.json` discovery and ingestion, failure
 handling) against an injected fake `spawn` — Shannon was never actually
-executed in this session.
+executed as a real subprocess in this session.
+
+**`report.json` discovery, and why it looks at the repo, not the
+workspace.** A production-readiness audit found this function used to
+search Hunter's own engagement `workspaceDir` for `report.json` — a
+directory with no real connection to anything Shannon writes — and every
+test masked the gap by manually pre-seeding a fake file into that (wrong)
+location. Reading Shannon's own source directly
+(`apps/worker/src/paths.ts:deliverablesDir`,
+`apps/worker/src/temporal/activities.ts`) shows `report.json` is a
+git-checkpointed deliverable written inside the *target repository* passed
+via `--repo`, at `.shannon/deliverables/report.json` — matching the root
+`CLAUDE.md`'s own "Deliverables" section — never inside Shannon's own
+`~/.shannon/workspaces/<name>/` state directory (npx mode, which this
+package always uses) or inside anything Hunter itself controls.
+`findReportJson` now looks there first, with a depth-bounded recursive
+search under the repo as defense-in-depth. `options.repoPath` (the same
+path passed as Shannon's own `--repo`) is a required field on
+`ShannonExecutionOptions` for exactly this reason. This still cannot be
+exercised against a genuinely spawned Shannon process in this package's own
+test suite — only the *location this function looks in* is now provably
+correct by construction, independent of whether the process ever actually
+runs; treat that distinction as still open until a real (throwaway, owned)
+target is used to verify it end to end.
+
+**Concurrent Shannon invocations get a distinct, deterministic
+`--workspace` name.** Before this fix, every invocation left `--workspace`
+unset, relying entirely on Shannon's own URL+timestamp auto-naming to keep
+two concurrent runs (e.g. two Shannon-kind experiments in the same
+research-track batch) from colliding — not a guaranteed-distinct identity.
+`pipeline/shannon-action.ts:shannonWorkspaceName` now hashes
+`engagementId::targetRef` into a `hunter-<12-hex>` name: deterministic (a
+retried action key reuses its own prior workspace rather than orphaning
+it), and always distinct across the two members of any concurrent batch
+(which always target distinct URLs).
 
 `ingestion/shannon-output.ts` validates against the real Shannon 1.9.0
 `report.json` shape — `report_meta` (`target`/`assessment_date`/`scope`/
@@ -456,14 +491,23 @@ proves this against a real corrupted file through the real entry point.
 Two places run genuinely concurrent work; one place is deliberately
 sequential, and the distinction matters:
 
-- **`recon/sources.ts:runReconSources`** — every passive/active source's
-  `isAvailable()`/`discover()` runs together via `Promise.allSettled`, not
-  a `for` loop. Sources are independent (none reads another's output), so
-  a slow one can never block a fast one, and one source throwing no longer
-  loses every other source's results — partial results are preserved.
+- **`recon/sources.ts:runReconSources`/`runReconSourcesStreaming`** — every
+  passive/active source's `isAvailable()`/`discover()` runs together via
+  `tools/concurrency-limit.ts:mapWithConcurrencyLimit`, not a `for` loop.
+  Sources are independent (none reads another's output), so a slow one can
+  never block a fast one, and one source throwing no longer loses every
+  other source's results — partial results are preserved.
   `recon/sources.test.ts`'s `'runs independent sources concurrently'` and
   `'preserves every other source's results when one source throws'` tests
   prove both properties with real timing, not just code inspection.
+  `maxConcurrency` (default: every source at once, unchanged from before
+  this parameter existed) genuinely *bounds* fan-out rather than merely
+  running it concurrently — surfaced as `AdaptiveHuntInput.reconConcurrency`
+  — for a caller that needs to cap simultaneous outbound requests against a
+  rate-limit-sensitive program.
+  `pipeline/adaptive-loop.concurrency.live.test.ts` proves both the
+  unbounded and bounded cases live, through `runAdaptiveHunt` itself against
+  a real local HTTP server, not just at the `recon/sources.ts` unit level.
 - **`pipeline/research-track.ts`'s experiment loop** — up to
   `ResearchTrackBudget.maxConcurrentExperiments` (default 3) experiments
   targeting distinct `(kind, target)` pairs execute together via

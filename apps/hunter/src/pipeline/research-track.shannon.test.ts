@@ -82,8 +82,12 @@ function countingSpawn(exitCode: number): { readonly spawnImpl: SpawnFn; readonl
   return { spawnImpl, calls: () => calls };
 }
 
-async function writeReportJson(workspaceDir: string, report: unknown): Promise<void> {
-  const dir = join(workspaceDir, 'shannon-run', '.shannon', 'deliverables');
+// report.json must be seeded where a real Shannon run actually writes it:
+// under the target repo's own .shannon/deliverables, not anywhere inside
+// Hunter's own workspace directory -- see
+// `shannon/execution-adapter.ts:findReportJson`'s docstring.
+async function writeReportJson(repoPath: string, report: unknown): Promise<void> {
+  const dir = join(repoPath, '.shannon', 'deliverables');
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, 'report.json'), JSON.stringify(report), 'utf8');
 }
@@ -157,7 +161,7 @@ test('a real DOM-XSS lead becomes a Shannon-kind hypothesis, and confirmed live 
   await withTempWorkspace(async (workspaceDir) => {
     const assetRef = 'https://app.example.com/search';
     const repoPath = await makeFakeRepo(workspaceDir);
-    await writeReportJson(workspaceDir, exploitedReport(assetRef));
+    await writeReportJson(repoPath, exploitedReport(assetRef));
     const spy = countingSpawn(0);
 
     const output = await runResearchTrack({
@@ -215,7 +219,7 @@ test('a valid but non-exploited Shannon result never verifies the observation, s
   await withTempWorkspace(async (workspaceDir) => {
     const assetRef = 'https://app.example.com/search';
     const repoPath = await makeFakeRepo(workspaceDir);
-    await writeReportJson(workspaceDir, nonExploitedReport(assetRef));
+    await writeReportJson(repoPath, nonExploitedReport(assetRef));
     const spy = countingSpawn(0);
 
     const output = await runResearchTrack({

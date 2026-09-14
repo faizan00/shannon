@@ -112,6 +112,77 @@ test('runReconSources runs independent sources concurrently — a slow source ne
   );
 });
 
+// === Regression: a production-readiness audit asked for genuinely bounded
+// (not merely "concurrent") recon fan-out — `maxConcurrency` (default:
+// unbounded, matching every pre-existing caller/test above) is what closes
+// that without changing any of the concurrency guarantees those tests
+// already prove. ===
+
+test('runReconSources with no maxConcurrency given still runs every source at once, unchanged from before this parameter existed', async () => {
+  let concurrent = 0;
+  let maxConcurrent = 0;
+  const sources = Array.from({ length: 5 }, (_, i) => ({
+    name: `source-${i}`,
+    isAvailable: async () => true,
+    discover: async () => {
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      concurrent -= 1;
+      return [];
+    },
+  }));
+  await runReconSources(sources);
+  assert.equal(maxConcurrent, 5);
+});
+
+test('runReconSources genuinely bounds fan-out to an explicit maxConcurrency', async () => {
+  let concurrent = 0;
+  let maxConcurrent = 0;
+  const sources = Array.from({ length: 6 }, (_, i) => ({
+    name: `source-${i}`,
+    isAvailable: async () => true,
+    discover: async () => {
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      concurrent -= 1;
+      return [
+        { source: `source`, kind: 'host' as const, label: 'x', attributes: {}, confidence: 0.5, discoveredAt: '' },
+      ];
+    },
+  }));
+  const results = await runReconSources(sources, 2);
+  assert.equal(maxConcurrent, 2, `expected at most 2 sources running at once, saw ${maxConcurrent}`);
+  assert.equal(results.length, 6, 'a bounded run must still eventually execute every source');
+});
+
+test('runReconSourcesStreaming genuinely bounds fan-out while still streaming per-source callbacks', async () => {
+  let concurrent = 0;
+  let maxConcurrent = 0;
+  const completedInOrder: string[] = [];
+  const sources = Array.from({ length: 4 }, (_, i) => ({
+    name: `source-${i}`,
+    isAvailable: async () => true,
+    discover: async () => {
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      concurrent -= 1;
+      return [];
+    },
+  }));
+  await runReconSourcesStreaming(
+    sources,
+    (event) => {
+      completedInOrder.push(event.source);
+    },
+    2,
+  );
+  assert.equal(maxConcurrent, 2);
+  assert.equal(completedInOrder.length, 4);
+});
+
 test("runReconSources preserves every other source's results when one source throws during discover()", async () => {
   const throwing = {
     name: 'broken-source',

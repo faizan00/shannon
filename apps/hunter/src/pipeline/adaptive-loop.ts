@@ -164,6 +164,17 @@ export interface AdaptiveHuntInput {
   readonly shannonOutputsByAsset: ReadonlyMap<string, string>;
   /** Additional deterministic safety limits beyond maxRounds; merged over DEFAULT_BUDGET. */
   readonly budget?: Partial<HuntBudget>;
+  /**
+   * Caps how many `passiveSources`/`activeSources` run at once during
+   * bootstrap (each list bounded independently — passive and active never
+   * share the cap). Omitted (the default) preserves the original,
+   * pre-existing behavior of firing every source in a list at once — see
+   * `recon/sources.ts:runReconSources`'s docstring. Set this when a live
+   * bootstrap against a rate-limit-sensitive program should never generate
+   * more than N simultaneous outbound requests, regardless of how many
+   * `ReconSource`s are configured.
+   */
+  readonly reconConcurrency?: number;
   /** Overrides the default reasoning provider selection (Claude if ANTHROPIC_API_KEY is set, else heuristic). Mainly for tests. */
   readonly reasoningRouter?: ReasoningRouter;
   /** Explicit, separate confirmation required before any "shannon" action executes Shannon for real instead of reading shannonOutputsByAsset. */
@@ -422,20 +433,24 @@ export async function runAdaptiveHunt(input: AdaptiveHuntInput): Promise<Result<
     // summary log line below report accurately even though sources no
     // longer all finish at once.
     let passiveSourcesReported = 0;
-    const passiveDiscoveries = await runReconSourcesStreaming(input.passiveSources, (event) => {
-      passiveSourcesReported += 1;
-      for (const discovery of event.discoveries) {
-        const up = upsertNode(worldModel, {
-          kind: discovery.kind,
-          label: discovery.label,
-          source: discovery.source,
-          confidence: discovery.confidence,
-          attributes: discovery.attributes,
-          scopeStatus: classifyRawDiscoveryScope(program, discovery),
-        });
-        worldModel = up.model;
-      }
-    });
+    const passiveDiscoveries = await runReconSourcesStreaming(
+      input.passiveSources,
+      (event) => {
+        passiveSourcesReported += 1;
+        for (const discovery of event.discoveries) {
+          const up = upsertNode(worldModel, {
+            kind: discovery.kind,
+            label: discovery.label,
+            source: discovery.source,
+            confidence: discovery.confidence,
+            attributes: discovery.attributes,
+            scopeStatus: classifyRawDiscoveryScope(program, discovery),
+          });
+          worldModel = up.model;
+        }
+      },
+      input.reconConcurrency ?? input.passiveSources.length,
+    );
     const correlatedPassive = correlateDiscoveries(passiveDiscoveries);
     log.push(
       `discover (passive): ${passiveDiscoveries.length} raw discoveries from ${passiveSourcesReported}/${input.passiveSources.length} source(s) (streamed into the world model as each source completed) -> ${correlatedPassive.length} unique node(s), ${crossSourceCorrelated(correlatedPassive).length} corroborated by 2+ independent sources`,
@@ -446,27 +461,31 @@ export async function runAdaptiveHunt(input: AdaptiveHuntInput): Promise<Result<
     let skippedUnknownScope = 0;
     let appliedActive = 0;
     let activeSourcesReported = 0;
-    await runReconSourcesStreaming(input.activeSources, (event) => {
-      activeSourcesReported += 1;
-      for (const discovery of event.discoveries) {
-        const scopeStatus = classifyRawDiscoveryScope(program, discovery);
-        if (scopeStatus !== 'in-scope') {
-          if (scopeStatus === 'out-of-scope') skippedOutOfScope += 1;
-          else skippedUnknownScope += 1;
-          continue;
+    await runReconSourcesStreaming(
+      input.activeSources,
+      (event) => {
+        activeSourcesReported += 1;
+        for (const discovery of event.discoveries) {
+          const scopeStatus = classifyRawDiscoveryScope(program, discovery);
+          if (scopeStatus !== 'in-scope') {
+            if (scopeStatus === 'out-of-scope') skippedOutOfScope += 1;
+            else skippedUnknownScope += 1;
+            continue;
+          }
+          const up = upsertNode(worldModel, {
+            kind: discovery.kind,
+            label: discovery.label,
+            source: discovery.source,
+            confidence: discovery.confidence,
+            attributes: discovery.attributes,
+            scopeStatus,
+          });
+          worldModel = up.model;
+          appliedActive += 1;
         }
-        const up = upsertNode(worldModel, {
-          kind: discovery.kind,
-          label: discovery.label,
-          source: discovery.source,
-          confidence: discovery.confidence,
-          attributes: discovery.attributes,
-          scopeStatus,
-        });
-        worldModel = up.model;
-        appliedActive += 1;
-      }
-    });
+      },
+      input.reconConcurrency ?? input.activeSources.length,
+    );
     log.push(
       `enumerate (active, in-scope targets only): ${appliedActive} discoveries applied from ${activeSourcesReported}/${input.activeSources.length} source(s) (streamed), ${skippedOutOfScope} skipped as out-of-scope, ${skippedUnknownScope} skipped as unknown-scope`,
     );

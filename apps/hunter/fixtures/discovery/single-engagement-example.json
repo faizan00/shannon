@@ -1,0 +1,30 @@
+{
+  "programId": "operator-supplied-example",
+  "programName": "Operator-Supplied Example Engagement",
+  "platform": "hackerone",
+  "offersBounty": true,
+  "assets": [
+    {
+      "identifier": "*.example.com",
+      "type": "wildcard-domain",
+      "instruction": "in-scope",
+      "tier": "critical"
+    },
+    {
+      "identifier": "internal.example.com",
+      "type": "domain",
+      "instruction": "out-of-scope"
+    }
+  ],
+  "rulesOfEngagement": ["no social engineering", "no denial of service"],
+  "disallowedTechniques": ["destructive testing"],
+  "rateLimitPerMinute": 20,
+  "signals": {
+    "assetSurfaceBreadth": {
+      "value": 0.3,
+      "confidence": 0.9,
+      "freshnessAt": "2026-09-14T00:00:00.000Z",
+      "detail": "1 in-scope wildcard asset, 1 explicit exclusion — derived directly from the supplied scope, not an invented economics figure"
+    }
+  }
+}

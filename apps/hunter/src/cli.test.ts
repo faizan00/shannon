@@ -123,6 +123,65 @@ test('refresh + status round-trip persistent program intelligence through a real
   }
 });
 
+// === Regression: `hunt --simulate --resume` no longer misreports a real,
+// in-progress engagement as "no existing engagement" merely because
+// checkpoint.json happens to be corrupted at the moment of the check. Found
+// by a production-readiness audit: the pre-flight resume guard used to key
+// off `loadCheckpoint`'s own ok/round fields, conflating "genuinely never
+// started" with "started, but its checkpoint got truncated" — and exited
+// before `runAdaptiveHunt`'s own quarantine-and-rebuild recovery (proven
+// elsewhere, e.g. `pipeline/adaptive-loop.test.ts`) ever got a chance to
+// run. It now also checks for the engagement's own state file, which
+// checkpoint corruption does not touch. ===
+
+test('hunt --simulate --resume genuinely has no engagement to resume when none was ever started', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hunter-cli-resume-fresh-'));
+  try {
+    const result = await run([
+      'hunt',
+      '--simulate',
+      '--workspace-dir',
+      dir,
+      '--engagement-id',
+      'never-started',
+      '--resume',
+    ]);
+    assert.equal(result.code, 1);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.ok, false);
+    assert.match(parsed.error, /no existing engagement/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('hunt --simulate --resume recovers a real engagement whose checkpoint is corrupted, instead of reporting it as missing', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hunter-cli-resume-corrupt-'));
+  try {
+    const engagementId = 'resume-corrupt-audit';
+    const first = await run(['hunt', '--simulate', '--workspace-dir', dir, '--engagement-id', engagementId]);
+    assert.equal(first.code, 0);
+
+    const checkpointPath = join(dir, 'engagements', engagementId, 'checkpoint.json');
+    await writeFile(checkpointPath, '{"truncated mid-writ', 'utf8');
+
+    const resumed = await run([
+      'hunt',
+      '--simulate',
+      '--workspace-dir',
+      dir,
+      '--engagement-id',
+      engagementId,
+      '--resume',
+    ]);
+    assert.equal(resumed.code, 0, `expected recovery, got: ${resumed.stdout}`);
+    const parsed = JSON.parse(resumed.stdout);
+    assert.equal(parsed.ok, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // === Regression: lifecycle surfaces the opportunity engine's verdict for the selected program (closes the gap a read-only audit found: this command used to authorize/hunt the raw top score without ever printing whether the opportunity engine endorsed it) ===
 
 test('lifecycle (no --authorize) prints decision/decisionReason and the opportunity summary for the selected program', async () => {
@@ -216,6 +275,98 @@ test('lifecycle --authorize without acknowledgesLowConfidence stays AWAITING_AUT
     const unblocked = JSON.parse(unblockedResult.stdout);
     assert.notEqual(unblocked.finalState, 'AWAITING_AUTHORIZATION');
     assert.equal(unblocked.authorizationBlockedReason, undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// === New capability: `--engagement <file>` lets an already-known,
+// already-authorized target reach the full scope/ROE/authorization/hunt
+// engine without going through program discovery/ranking's multi-candidate
+// dataset at all — decoupling HackerOne-specific intake from Hunter's
+// execution engine (see `discovery/single-program-provider.ts`). It reuses
+// every existing gate unchanged: a program with no real signal data still
+// cannot reach a robust HUNT_NOW decision, and low confidence still
+// requires the same explicit `acknowledgesLowConfidence` the multi-program
+// path already requires — nothing about this shortcut weakens the
+// opportunity/authorization gates. ===
+
+const SINGLE_ENGAGEMENT_FIXTURE = fileURLToPath(
+  new URL('../fixtures/discovery/single-engagement-example.json', import.meta.url),
+);
+
+test('lifecycle --engagement reaches AWAITING_AUTHORIZATION for a single operator-supplied target, with no discovery dataset involved', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hunter-cli-engagement-'));
+  try {
+    const result = await run([
+      'lifecycle',
+      '--engagement',
+      SINGLE_ENGAGEMENT_FIXTURE,
+      '--workspace-dir',
+      dir,
+      '--engagement-id',
+      'e1',
+    ]);
+    assert.equal(result.code, 0);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.finalState, 'AWAITING_AUTHORIZATION');
+    assert.equal(parsed.selected.programId, 'operator-supplied-example');
+    assert.equal(parsed.opportunity.evaluatedCount, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('lifecycle --engagement completes a real (non-live) hunt once explicitly authorized, through the exact same engine as the multi-program path', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hunter-cli-engagement-run-'));
+  try {
+    const authPath = join(dir, 'auth.json');
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        confirmed: true,
+        confirmedBy: 'audit-operator',
+        confirmedAt: new Date().toISOString(),
+        scopeReviewed: true,
+        acknowledgesLowConfidence: true,
+      }),
+    );
+    const result = await run([
+      'lifecycle',
+      '--engagement',
+      SINGLE_ENGAGEMENT_FIXTURE,
+      '--workspace-dir',
+      dir,
+      '--engagement-id',
+      'e2',
+      '--authorize',
+      authPath,
+    ]);
+    assert.equal(result.code, 0);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.finalState, 'COMPLETED');
+    assert.equal(parsed.targetUrl, 'https://example.com');
+    assert.ok(parsed.hunt);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('lifecycle rejects --engagement combined with --programs/--provider rather than silently picking one', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hunter-cli-engagement-conflict-'));
+  try {
+    const result = await run([
+      'lifecycle',
+      '--engagement',
+      SINGLE_ENGAGEMENT_FIXTURE,
+      '--programs',
+      BUNDLED_DATASET,
+      '--workspace-dir',
+      dir,
+      '--engagement-id',
+      'e3',
+    ]);
+    assert.equal(result.code, 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

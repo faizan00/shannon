@@ -16,6 +16,7 @@
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
+import { mapWithConcurrencyLimit } from '../tools/concurrency-limit.js';
 import type { RawDiscovery, ToolCapability, WorldModelNodeKind } from '../types.js';
 
 const execFileAsync = promisify(execFile);
@@ -134,32 +135,43 @@ export class LocalFixtureReconSource implements ReconSource {
  * Runs every available source and concatenates their raw discoveries.
  *
  * Sources are independent — none reads another's output — so every
- * `isAvailable()`/`discover()` pair runs concurrently via `Promise.all`
- * rather than one at a time. This is a genuine concurrency boundary, not a
- * cosmetic one: a slow source (a real network call) can never block a fast
- * one, and one source throwing during `discover()` still lets every other
- * source's result through (`Promise.allSettled` semantics), rather than
- * failing the whole recon phase. Result order is not meaningful — callers
- * (`recon/correlate.ts`, `worldmodel/graph.ts:upsertNode`) group/merge by
- * (kind, label), never by array position.
+ * `isAvailable()`/`discover()` pair runs concurrently, via
+ * `tools/concurrency-limit.ts:mapWithConcurrencyLimit`, rather than one at a
+ * time. This is a genuine concurrency boundary, not a cosmetic one: a slow
+ * source (a real network call) can never block a fast one, and one source
+ * throwing during `discover()` still lets every other source's result
+ * through (each source's own body is individually try/caught below, the
+ * same isolation `Promise.allSettled` used to provide directly), rather
+ * than failing the whole recon phase. Result order is not meaningful —
+ * callers (`recon/correlate.ts`, `worldmodel/graph.ts:upsertNode`)
+ * group/merge by (kind, label), never by array position.
+ *
+ * `maxConcurrency` defaults to `sources.length` — every source still fires
+ * at once, exactly as before this parameter existed — so no existing caller
+ * changes behavior. A caller that wants a real cap (bounding how many
+ * concurrent outbound requests a live bootstrap or round-loop tool-bridge
+ * call can generate against one target) passes a smaller number.
  */
-export async function runReconSources(sources: readonly ReconSource[]): Promise<readonly RawDiscovery[]> {
-  const settled = await Promise.allSettled(
-    sources.map(async (source) => {
+export async function runReconSources(
+  sources: readonly ReconSource[],
+  maxConcurrency: number = sources.length,
+): Promise<readonly RawDiscovery[]> {
+  const perSource = await mapWithConcurrencyLimit(sources, maxConcurrency, async (source) => {
+    try {
       if (!(await source.isAvailable())) {
-        return [];
+        return [] as readonly RawDiscovery[];
       }
-      return source.discover();
-    }),
-  );
-  const results: RawDiscovery[] = [];
-  for (const outcome of settled) {
-    if (outcome.status === 'fulfilled') {
-      results.push(...outcome.value);
+      return await source.discover();
+    } catch {
+      // A source that threw during discover() contributes nothing — the
+      // same outcome as it never having been available — rather than
+      // failing every other concurrently-running source's result.
+      return [] as readonly RawDiscovery[];
     }
-    // A source that threw during discover() contributes nothing — the same
-    // outcome as it never having been available — rather than failing every
-    // other concurrently-running source's result.
+  });
+  const results: RawDiscovery[] = [];
+  for (const discoveries of perSource) {
+    results.push(...discoveries);
   }
   return results;
 }
@@ -191,25 +203,30 @@ export interface ReconStreamEvent {
  * synchronous body always finishes before the next source's `then` can run
  * (JavaScript has no preemptive threading), so a caller mutating shared
  * state directly inside the callback never needs its own lock.
+ *
+ * `maxConcurrency` defaults to `sources.length` (every source fires at
+ * once, identical to behavior before this parameter existed) — see
+ * `runReconSources`'s docstring for why that default is safe to add without
+ * touching any existing caller or test.
  */
 export async function runReconSourcesStreaming(
   sources: readonly ReconSource[],
   onSourceComplete: (event: ReconStreamEvent) => void | Promise<void>,
+  maxConcurrency: number = sources.length,
 ): Promise<readonly RawDiscovery[]> {
   const results: RawDiscovery[] = [];
-  await Promise.allSettled(
-    sources.map(async (source) => {
-      let discoveries: readonly RawDiscovery[] = [];
-      try {
-        if (await source.isAvailable()) {
-          discoveries = await source.discover();
-        }
-      } catch {
-        discoveries = [];
+  await mapWithConcurrencyLimit(sources, maxConcurrency, async (source) => {
+    let discoveries: readonly RawDiscovery[] = [];
+    try {
+      if (await source.isAvailable()) {
+        discoveries = await source.discover();
       }
-      results.push(...discoveries);
-      await onSourceComplete({ source: source.name, discoveries, at: new Date().toISOString() });
-    }),
-  );
+    } catch {
+      discoveries = [];
+    }
+    results.push(...discoveries);
+    await onSourceComplete({ source: source.name, discoveries, at: new Date().toISOString() });
+    return discoveries;
+  });
   return results;
 }

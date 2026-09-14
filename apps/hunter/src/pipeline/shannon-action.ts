@@ -25,6 +25,7 @@
  * it must never run.
  */
 
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { isTechniqueAllowed } from '../discovery/roe.js';
 import { ingestShannonOutput, parseShannonReport } from '../ingestion/shannon-output.js';
@@ -59,6 +60,31 @@ export interface ShannonActionResult {
   readonly failed: boolean;
   readonly executionStatus: ExecutionStatus;
   readonly toolName: 'shannon';
+}
+
+/**
+ * Deterministic, distinct `--workspace` name for one Shannon invocation.
+ *
+ * A production-readiness audit flagged that concurrent Shannon-kind
+ * experiments (`pipeline/research-track.ts` can run up to
+ * `maxConcurrentExperiments` of them in the same batch, per distinct
+ * `(kind, target)`) previously left `workspace` unset on every invocation
+ * — relying entirely on Shannon's own URL+timestamp auto-naming (see the
+ * root `CLAUDE.md`'s "Workspaces & Resume") to keep two simultaneous runs'
+ * state apart. That is not a guaranteed-distinct identity (two invocations
+ * launched within the same auto-naming timestamp granularity could collide
+ * in principle), and it gives a human inspecting `./shannon scans`
+ * afterward no way to tell which Shannon run belonged to which Hunter
+ * action. Hashing `engagementId::targetRef` fixes both: same input always
+ * reproduces the same workspace name (so a retried/duplicate action key
+ * reuses, rather than orphans, its own prior Shannon workspace), and
+ * distinct targets — which is always true for any two members of the same
+ * concurrent batch, see `research-track.ts:buildAvailableExperiments` —
+ * always get distinct names.
+ */
+function shannonWorkspaceName(engagementId: string, targetRef: string): string {
+  const digest = createHash('sha256').update(`${engagementId}::${targetRef}`).digest('hex').slice(0, 12);
+  return `hunter-${digest}`;
 }
 
 /**
@@ -105,7 +131,11 @@ export async function executeShannonHuntAction(
       toolName: 'shannon',
     };
   }
-  const built = buildShannonInvocation({ url: action.targetRef, repo: ctx.repoPath as string });
+  const built = buildShannonInvocation({
+    url: action.targetRef,
+    repo: ctx.repoPath as string,
+    workspace: shannonWorkspaceName(ctx.engagementId, action.targetRef),
+  });
   if (!built.ok) {
     return {
       discoveries: [],
@@ -123,7 +153,7 @@ export async function executeShannonHuntAction(
     const execResult = await executeShannonAction(built.value, {
       confirmed: true,
       engagementId: ctx.engagementId,
-      workspaceDir: ctx.workspaceDir,
+      repoPath: ctx.repoPath as string,
       ...(ctx.liveShannon.spawnImpl !== undefined ? { spawnImpl: ctx.liveShannon.spawnImpl } : {}),
       ...(ctx.liveShannon.timeoutMs !== undefined ? { timeoutMs: ctx.liveShannon.timeoutMs } : {}),
     });

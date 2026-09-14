@@ -17,7 +17,7 @@
  */
 
 import { type ChildProcess, spawn } from 'node:child_process';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ingestShannonOutput, parseShannonReport } from '../ingestion/shannon-output.js';
 import { err, type Observation, ok, type Result } from '../types.js';
@@ -61,7 +61,12 @@ const defaultSpawn: SpawnFn = (command, args) => spawn(command, [...args], { std
 export interface ShannonExecutionOptions {
   readonly confirmed: boolean;
   readonly engagementId: string;
-  readonly workspaceDir: string;
+  /**
+   * The exact local path passed as Shannon's own `--repo` flag for this
+   * invocation — required so `report.json` can be found where Shannon
+   * actually writes it. See `findReportJson`'s docstring.
+   */
+  readonly repoPath: string;
   readonly timeoutMs?: number;
   readonly spawnImpl?: SpawnFn;
 }
@@ -75,8 +80,48 @@ export interface ShannonExecutionResult {
   readonly observations: readonly Observation[];
 }
 
-/** Depth-bounded search for a file literally named report.json under workspaceDir (Shannon's structured findings output). */
-async function findReportJson(dir: string, depthRemaining: number): Promise<string | undefined> {
+/**
+ * Where a real Shannon run actually writes `report.json`, verified by
+ * reading Shannon's own source rather than guessed: it is a git-checkpointed
+ * deliverable inside the *target repository* Shannon was given via
+ * `--repo`, not inside Shannon's own workspace/state directory, and not
+ * inside anything Hunter itself controls.
+ *
+ * Trace (`apps/worker/src` in this monorepo, read directly, not executed):
+ * `temporal/activities.ts` writes `report.json` under
+ * `deliverablesDir(input.repoPath, input.deliverablesSubdir)`
+ * (`paths.ts:deliverablesDir` = `path.join(repoPath, ...subdir.split('/'))`),
+ * and `deliverablesSubdir` defaults to `DEFAULT_DELIVERABLES_SUBDIR =
+ * '.shannon/deliverables'` — Hunter's own invocation
+ * (`shannon/config.ts:buildShannonInvocation`) never passes a config file
+ * that could override that default. This matches the root `CLAUDE.md`'s own
+ * "Deliverables" bullet ("Saved to `.shannon/deliverables/` in the target
+ * repo"). Shannon's *workspace* directory (`~/.shannon/workspaces/<name>/`
+ * in the npx mode this package always uses — see `apps/cli/src/home.ts`)
+ * holds logs, session state, and a rendered copy of the report — never the
+ * structured `report.json` findings this function ingests.
+ *
+ * A production-readiness audit found that this function previously searched
+ * Hunter's own `workspaceDir` instead — a directory with no real connection
+ * to where Shannon writes anything — and every test masked the gap by
+ * manually pre-writing a fake `report.json` into whatever (wrong) location
+ * the code happened to search, rather than the real one. This fixes the
+ * search target itself; the depth-bounded recursive fallback below stays
+ * only as defense-in-depth against an unexpected repo layout, never as the
+ * primary mechanism.
+ */
+async function findReportJson(repoPath: string, depthRemaining: number): Promise<string | undefined> {
+  const expectedPath = join(repoPath, '.shannon', 'deliverables', 'report.json');
+  try {
+    await stat(expectedPath);
+    return expectedPath;
+  } catch {
+    // Fall through to the bounded recursive search below.
+  }
+  return findReportJsonRecursive(repoPath, depthRemaining);
+}
+
+async function findReportJsonRecursive(dir: string, depthRemaining: number): Promise<string | undefined> {
   if (depthRemaining < 0) return undefined;
   let entries: import('node:fs').Dirent[];
   try {
@@ -91,7 +136,7 @@ async function findReportJson(dir: string, depthRemaining: number): Promise<stri
   }
   for (const entry of entries) {
     if (entry.isDirectory()) {
-      const found = await findReportJson(join(dir, entry.name), depthRemaining - 1);
+      const found = await findReportJsonRecursive(join(dir, entry.name), depthRemaining - 1);
       if (found) return found;
     }
   }
@@ -144,9 +189,24 @@ function runProcess(
 /**
  * Executes Shannon for real. Requires `confirmed: true`; nothing else in
  * this package ever sets that. After the process exits, searches
- * `workspaceDir` for a `report.json` and — if one parses against the
- * expected shape (see `ingestion/shannon-output.ts` for known limitations
- * there) — ingests it into observations.
+ * `options.repoPath` for a `report.json` (see `findReportJson`'s docstring
+ * for exactly where, and why) and — if one parses against the expected
+ * shape (see `ingestion/shannon-output.ts` for known limitations there) —
+ * ingests it into observations.
+ *
+ * FIXED, previously a known gap: this function used to search Hunter's own
+ * `workspaceDir` — which has no real connection to anything Shannon writes
+ * — instead of the target repository, and every existing test masked that
+ * by manually pre-seeding a fake `report.json` wherever the (wrong) search
+ * happened to look. `options.repoPath` (the same path passed as Shannon's
+ * own `--repo`) is now required and is where `findReportJson` actually
+ * looks, verified against Shannon's own source
+ * (`apps/worker/src/paths.ts:deliverablesDir`,
+ * `apps/worker/src/temporal/activities.ts`), not guessed. This still
+ * cannot be exercised against a genuinely spawned Shannon process in this
+ * package's own test suite (every test injects `spawnImpl`) — only the
+ * *location this function looks in* is now provably correct, independent
+ * of whether the process ever actually runs.
  */
 export async function executeShannonAction(
   invocation: ShannonInvocation,
@@ -168,7 +228,7 @@ export async function executeShannonAction(
     return err(`failed to start Shannon: ${(error as Error).message}`);
   }
 
-  const reportPath = await findReportJson(options.workspaceDir, 6);
+  const reportPath = await findReportJson(options.repoPath, 6);
   let observations: readonly Observation[] = [];
   if (reportPath) {
     try {

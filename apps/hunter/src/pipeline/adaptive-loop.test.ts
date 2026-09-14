@@ -265,7 +265,12 @@ function mockChildProcess(exitCode: number): ChildProcess {
 
 test('live Shannon execution only runs when explicitly confirmed, and its (mocked) captured output reaches the finding', async () => {
   await withTempWorkspace(async (workspaceDir) => {
-    const reportDir = join(workspaceDir, 'shannon-run', '.shannon', 'deliverables');
+    // report.json must be seeded where a real Shannon run actually writes
+    // it: under the target repo's own .shannon/deliverables, not anywhere
+    // inside Hunter's own workspace directory. See
+    // `shannon/execution-adapter.ts:findReportJson`'s docstring.
+    const repoPath = join(workspaceDir, 'repo');
+    const reportDir = join(repoPath, '.shannon', 'deliverables');
     await mkdir(reportDir, { recursive: true });
     await writeFile(
       join(reportDir, 'report.json'),
@@ -305,7 +310,7 @@ test('live Shannon execution only runs when explicitly confirmed, and its (mocke
       return mockChildProcess(0);
     };
 
-    const result = await runAdaptiveHunt({ ...input, liveShannon: { confirmed: true, spawnImpl } });
+    const result = await runAdaptiveHunt({ ...input, repoPath, liveShannon: { confirmed: true, spawnImpl } });
     assert.equal(result.ok, true);
     if (!result.ok) return;
 
@@ -384,7 +389,11 @@ test('the research track is genuinely wired into runAdaptiveHunt: it analyzes re
 
 test('a Shannon-kind research experiment executes live through runAdaptiveHunt, via the exact same confirmed spawn seam as the primary loop', async () => {
   await withTempWorkspace(async (workspaceDir) => {
-    const reportDir = join(workspaceDir, 'shannon-research-run', '.shannon', 'deliverables');
+    // report.json must be seeded where a real Shannon run actually writes
+    // it: under the target repo's own .shannon/deliverables. See
+    // `shannon/execution-adapter.ts:findReportJson`'s docstring.
+    const repoPath = join(workspaceDir, 'repo');
+    const reportDir = join(repoPath, '.shannon', 'deliverables');
     await mkdir(reportDir, { recursive: true });
     await writeFile(
       join(reportDir, 'report.json'),
@@ -435,6 +444,7 @@ test('a Shannon-kind research experiment executes live through runAdaptiveHunt, 
 
     const result = await runAdaptiveHunt({
       ...input,
+      repoPath,
       // The primary loop's own liveShannon is deliberately left unset —
       // this proves the research track's Shannon confirmation is genuinely
       // separate, not inherited.
