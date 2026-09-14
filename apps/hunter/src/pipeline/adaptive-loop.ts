@@ -313,7 +313,7 @@ const SOURCE_DIVERSITY_FOR_INDEPENDENT_VALIDATION = 2;
 export async function runAdaptiveHunt(input: AdaptiveHuntInput): Promise<Result<AdaptiveHuntOutput, string>> {
   const log: string[] = [];
   const budget: HuntBudget = { ...DEFAULT_BUDGET, ...input.budget };
-  const reasoningRouter = input.reasoningRouter ?? createReasoningProvider();
+  const reasoningRouter = input.reasoningRouter ?? (await createReasoningProvider());
 
   // === SCOPE ===
   const intake = new LocalFileIntake();

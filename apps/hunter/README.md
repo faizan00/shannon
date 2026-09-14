@@ -256,9 +256,9 @@ and demonstrates that a new live observation can change which hypothesis
 `selectNextInvestigation` picks next — the "adaptive, not a checklist"
 property, proven live rather than only against static fixtures.
 
-## ReasoningProvider (Claude-backed, with a deterministic fallback)
+## ReasoningProvider (Claude-backed two ways, with a deterministic fallback)
 
-`reasoning/provider.ts` defines the abstraction; two real implementations
+`reasoning/provider.ts` defines the abstraction; three real implementations
 exist:
 
 - **`HeuristicReasoningProvider`** — not a stub: it wraps the same
@@ -272,30 +272,79 @@ exist:
   against `reasoning/schema.ts` before being trusted. It uses
   `ANTHROPIC_API_KEY` — the credential convention this repository already
   uses everywhere else (see the root `CLAUDE.md`'s provider table) — not an
-  invented mechanism.
+  invented mechanism. For an operator paying for Anthropic API usage
+  directly.
+- **`ClaudeCodeReasoningProvider`** (`reasoning/claude-code-provider.ts`) —
+  for an operator using Claude Code with a Claude Pro/Max *subscription*
+  (OAuth) instead of an API key. This package has zero third-party
+  dependencies by design (no `@anthropic-ai/claude-agent-sdk`), and a
+  Claude Code OAuth session is a different authentication scheme than
+  `ANTHROPIC_API_KEY` — `ClaudeReasoningProvider`'s direct `x-api-key` HTTP
+  call cannot use it. The verified integration point is the `claude` CLI
+  binary itself, run as a real subprocess exactly like every other tool
+  this package drives (`recon/cli-adapters.ts`, `shannon/execution-adapter.ts`):
+  `claude -p "<prompt>" --output-format json --tools "" --json-schema '<schema>'`
+  reuses the CLI's own already-authenticated OAuth session (verified
+  directly against the real, installed `claude` CLI — real inference, real
+  `session_id`/`total_cost_usd`, not assumed from `--help` text) and
+  returns a `structured_output` field already validated against the
+  supplied JSON Schema by the CLI itself; `reasoning/schema.ts`'s
+  validators still run against that output afterward, same as the direct-API
+  provider — never trust one validation layer alone. `--tools ""` disables
+  all of Claude Code's own tools for this call: it only ever wants a JSON
+  proposal, never file or command access.
 
-`reasoning/router.ts:createReasoningProvider()` picks Claude when
-`ANTHROPIC_API_KEY` is set, else the heuristic provider outright, and
-always pairs whichever primary is chosen with the heuristic provider as
-fallback. `selectNextBestActionWithFallback` tries the primary and, on
-*any* error (network failure, non-2xx, schema validation failure), falls
-back to the heuristic provider and records why — the hunt never stalls
-because a model call failed.
+`reasoning/router.ts:createReasoningProvider()` picks, in order: (1)
+`ClaudeReasoningProvider` when `ANTHROPIC_API_KEY` is set — unchanged; (2)
+`ClaudeCodeReasoningProvider` when `HUNTER_USE_CLAUDE_CODE=1` is
+**explicitly** set *and* the `claude` binary is genuinely present — never
+merely because the binary happens to exist on PATH, the same explicit-opt-in
+discipline as `liveRecon`/`liveShannon` (a developer machine with Claude
+Code installed for unrelated reasons must not silently start spending a
+Claude subscription's usage every hunt round); (3) the heuristic provider
+outright. Whichever primary is chosen is always paired with the heuristic
+provider as fallback. `selectNextBestActionWithFallback` tries the primary
+and, on *any* error (network/process failure, non-2xx, schema validation
+failure), falls back to the heuristic provider and records why — the hunt
+never stalls because a model call failed. `HUNTER_REASONING_MODEL`
+configures either Claude-backed provider's model (`ClaudeReasoningProvider`'s
+API model id, or `ClaudeCodeReasoningProvider`'s `--model` alias);
+`HUNTER_CLAUDE_CODE_BINARY` overrides the `claude` binary name/path for the
+OAuth path specifically.
 
-**In this implementation session, `ANTHROPIC_API_KEY` was not set**, so
-every test and the bundled simulation run the heuristic provider. The
-Claude provider's request construction, response parsing, and error/
-fallback handling are verified with an injected fake `fetch`
-(`reasoning/claude-provider.test.ts`). A separate, clearly-marked
-integration harness — `reasoning/claude-provider.integration.test.ts` —
-makes a real call to `api.anthropic.com` over a synthetic world-model
-snapshot (no security target involved) whenever `ANTHROPIC_API_KEY` *is*
-set; it is skipped (not run, not faked) otherwise, and it was skipped in
-this session for the same reason: no key was configured here. Do not read
-"tested against a mock" as "equivalent to tested live" — a passing run of
-the integration file is what "tested live" actually means for this
-provider, and the two are never conflated in test output or in
-`checkpoint.decisions`.
+**Both Claude-backed providers have real, passing, live integration
+tests — this is not theoretical.** `reasoning/claude-provider.test.ts` and
+`reasoning/claude-code-provider.test.ts` verify request construction,
+response parsing, and error/fallback handling against an injected fake
+`fetch`/`spawnCaptureImpl` respectively — no network, no process, ever.
+Separate, clearly-marked integration harnesses make it real:
+`reasoning/claude-provider.integration.test.ts` (skipped unless
+`ANTHROPIC_API_KEY` is set) and `reasoning/claude-code-provider.integration.test.ts`
+(skipped unless the `claude` binary is on PATH — and asserts
+`ANTHROPIC_API_KEY` is *not* set, so it cannot silently pass by using the
+wrong path) both genuinely ran in this session, over a synthetic
+two-candidate world-model snapshot (no security target involved): a real
+`claude` CLI call, authenticated via Claude Code's own OAuth session with
+no API key anywhere in the environment, returned a schema-valid proposal
+that matched one of the two real candidates verbatim, and a real
+hypothesis grounded strictly in the one real observation supplied — proof
+of genuine independent reasoning over real alternatives, not an echo. A
+same-session run of the full bundled offline simulation with
+`HUNTER_USE_CLAUDE_CODE=1` recorded `source: "claude"` on every round's
+`checkpoint.decisions` entry (real ~20-30s gaps between rounds — genuine
+sequential API calls, not cached/instant) and reached the identical action
+sequence the heuristic provider reaches on that fixture; Claude's own
+`whyThisAction` text at the round with a single real candidate correctly
+said so ("This is the only candidate action available..."), rather than
+inventing a comparison it could not make — this fixture simply never
+poses a genuine multi-candidate choice, which is exactly what the
+dedicated integration test's two-candidate snapshot exists to exercise
+instead. Do not read "tested against a mock" as "equivalent to tested
+live" for either provider — a passing run of the relevant integration file
+is what "tested live" means, and the two are never conflated in test
+output or in `checkpoint.decisions` (`source` is always `"claude"` for
+both Claude-backed providers, distinguishable only by which one is wired
+in `router.ts` for a given environment).
 
 A proposal is never trusted directly regardless of source — see the policy
 gate below.

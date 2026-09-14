@@ -8,14 +8,15 @@
  * `https://api.anthropic.com/v1/messages` using the exact mechanism this
  * package ships (`ANTHROPIC_API_KEY`, the same credential convention the
  * rest of this Shannon monorepo already documents in the root CLAUDE.md's
- * provider table — not an invented or Claude-Code-specific API). See
- * `claude-provider.ts`'s module docstring for why this, and not a
- * Claude-Code-subscription/OAuth mechanism, is the supported integration
- * point for a standalone Node package like this one: Shannon's own worker
- * authenticates model calls the same way (`ANTHROPIC_API_KEY` /
- * `SHANNON_AI_API_KEY`), and the one OAuth/subscription-reuse path Shannon
- * offers (`SHANNON_USE_PI_AUTH`) is specific to the pi coding-agent harness
- * the worker embeds, which this package does not use.
+ * provider table). This is the supported path for an operator paying for
+ * Anthropic API usage directly. An operator using Claude Code with a
+ * Claude Pro/Max *subscription* (OAuth) instead has a real, separate,
+ * verified integration point — `claude-code-provider.ts`'s
+ * `ClaudeCodeReasoningProvider`, which shells out to the `claude` CLI's own
+ * non-interactive print mode rather than calling this API directly (see
+ * that file's module docstring for why, and its own
+ * `claude-code-provider.integration.test.ts` for the equivalent live proof
+ * over a real OAuth session with no `ANTHROPIC_API_KEY` set).
  *
  * Every test here is skipped unless `ANTHROPIC_API_KEY` is present in the
  * environment — it never runs in ordinary `pnpm test`/CI unless that

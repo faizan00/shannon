@@ -21,7 +21,7 @@ import type { ActionProposal, HypothesisProposal, Observation, WorldModelSnapsho
 import type { ReasoningProvider } from './provider.js';
 import { validateActionProposal, validateHypothesisProposal } from './schema.js';
 
-const ACTION_PROPOSAL_TOOL = {
+export const ACTION_PROPOSAL_TOOL = {
   name: 'select_next_best_action',
   description:
     'Propose the single next-best action to investigate, given the current world model, hypotheses, and action queue. You may only propose an action that already appears in candidateActions — never invent a target, hypothesis id, or action kind.',
@@ -60,7 +60,7 @@ const ACTION_PROPOSAL_TOOL = {
   },
 } as const;
 
-const HYPOTHESIS_PROPOSAL_TOOL = {
+export const HYPOTHESIS_PROPOSAL_TOOL = {
   name: 'propose_hypotheses',
   description: 'Propose zero or more hypotheses grounded strictly in the supplied observations.',
   input_schema: {
@@ -197,7 +197,7 @@ export class ClaudeReasoningProvider implements ReasoningProvider {
   }
 }
 
-function buildActionSelectionPrompt(snapshot: WorldModelSnapshot): string {
+export function buildActionSelectionPrompt(snapshot: WorldModelSnapshot): string {
   return [
     'You are the reasoning layer of an authorized security-research controller (Hunter).',
     'You may only PROPOSE the next-best action to investigate; a separate deterministic policy layer decides whether it is allowed to run.',
@@ -214,7 +214,7 @@ function buildActionSelectionPrompt(snapshot: WorldModelSnapshot): string {
   ].join('\n');
 }
 
-function buildHypothesisPrompt(observations: readonly Observation[], engagementId: string): string {
+export function buildHypothesisPrompt(observations: readonly Observation[], engagementId: string): string {
   return [
     'You are the reasoning layer of an authorized security-research controller (Hunter).',
     `Engagement: ${engagementId}`,
