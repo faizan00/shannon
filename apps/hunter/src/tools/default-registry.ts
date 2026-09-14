@@ -26,8 +26,10 @@ import {
   SubfinderAdapter,
   WaybackurlsAdapter,
 } from '../recon/cli-adapters.js';
+import { CloudBucketAdapter } from './cloud-bucket-adapter.js';
 import { BehavioralTestAdapter, JsCollectorAdapter } from './live-adapters.js';
 import { ToolRegistry } from './registry.js';
+import { SubdomainBruteforceAdapter } from './subdomain-bruteforce-adapter.js';
 
 export function buildDefaultToolRegistry(): ToolRegistry {
   const registry = new ToolRegistry();
@@ -44,13 +46,15 @@ export function buildDefaultToolRegistry(): ToolRegistry {
   registry.register(new NucleiAdapter());
   registry.register(new JsCollectorAdapter());
   registry.register(new BehavioralTestAdapter());
+  registry.register(new SubdomainBruteforceAdapter());
+  registry.register(new CloudBucketAdapter());
   return registry;
 }
 
 /** Default per-`ActionKind` adapter preference order, cheapest/most-reliable first. Callers may override via `LiveReconOptions.preferredToolNames`. */
 export const DEFAULT_PREFERRED_TOOL_NAMES: Readonly<Record<string, readonly string[]>> = {
   'passive-recon': ['certificate-transparency', 'subfinder', 'chaos', 'amass', 'gau', 'waybackurls'],
-  'active-recon': ['httpx', 'katana', 'naabu', 'ffuf', 'nuclei'],
+  'active-recon': ['httpx', 'katana', 'naabu', 'ffuf', 'nuclei', 'subdomain-bruteforce', 'cloud-bucket-discovery'],
   'js-intelligence': ['js-collector'],
   'behavioral-diff': ['behavioral-test'],
 };

@@ -1111,6 +1111,101 @@ already had.
   provider that computes these from a live payout/report history API is a
   natural next addition, not a redesign.
 
+## Extended recon capabilities (wordlists, monitoring, deobfuscation, cloud, mobile, and two credential-gated scaffolds)
+
+Seven additions aimed at closing the gap with what an experienced individual
+hunter's own tooling does that a checklist scanner's doesn't. Each is real,
+wired where it makes sense, and honestly labeled where it isn't yet
+live-tested:
+
+- **Custom wordlist generation + subdomain bruteforce**
+  (`recon/wordlist-generator.ts`, `recon/subdomain-bruteforce.ts`,
+  `tools/subdomain-bruteforce-adapter.ts`). `extractCandidateTokens` pulls
+  reusable vocabulary out of what recon has *already* discovered (hostnames,
+  path segments, JS identifiers) so later rounds permute against the
+  target's own real vocabulary, not just a static public wordlist.
+  `bruteforceSubdomains` does real, bounded-concurrency DNS resolution
+  (`node:dns/promises`) against the candidate list — proven live against
+  `example.com` (IANA-reserved for testing). Wired into
+  `tools/default-registry.ts`/`pipeline/tool-bridge.ts` as
+  `active-recon`/`active-in-scope`, so ROE/scope/rate-limit gates apply to
+  it exactly like `naabu`.
+- **Continuous/real-time monitoring** (`recon/watch.ts`). A dependency-free
+  polling loop around the exact same `ReconSource`/`runReconSources`
+  abstraction one-shot recon already uses — no second discovery
+  implementation — that fires a callback only for genuinely *new*
+  discoveries across ticks (proven with a source whose results change
+  between polls), isolates a throwing source without stopping the loop,
+  and stops cleanly via `stop()`/`maxIterations`.
+- **JS deobfuscation + version-diffing**
+  (`recon/js-deobfuscate.ts`, `recon/js-version-diff.ts`). Resolves the
+  real "string array obfuscation" shape (hex/unicode-escaped string
+  literals hoisted into an array and referenced by index or a one-level
+  decoder function) as a pre-processing step feeding the existing,
+  unmodified `analyzeJavaScript` — proven end to end: an endpoint that is
+  genuinely invisible to `analyzeJavaScript` directly (hex-escaped, no
+  readable text in the source) is found once resolved.
+  `diffAndRecordBundle` persists one JSONL snapshot log per workspace
+  (mirroring `memory/hunt-memory.ts`'s once-per-workspace persistence) so a
+  hunt run weeks later against the same target detects exactly which
+  strings are new since the last time it looked — proven across three
+  separate calls simulating three separate hunts.
+- **Cloud storage bucket discovery** (`recon/cloud-buckets.ts`,
+  `tools/cloud-bucket-adapter.ts`). Plain, read-only `GET` against S3/GCS/
+  Azure Blob's own public listing endpoints — exactly how these services
+  are designed to be queried, never an exploit — distinguishing "does not
+  exist" (404), "exists but private" (403/other, no listing body), and
+  "exists and is publicly listable" (200 with a real listing body) from
+  the provider's own response. Proven live against real AWS/GCS
+  infrastructure for a guaranteed-nonexistent, randomly-generated bucket
+  name (safe: this queries the provider's own infrastructure, never a real
+  target). Wired into the default registry as `active-recon`.
+- **Mobile app (APK/IPA) static intelligence** (`recon/mobile-app-intel.ts`,
+  `tools/mobile-app-adapter.ts`). Operator-supplied file only — this
+  package never fetches an app from a store itself. Unzips a real `.apk`/
+  `.ipa` with the real `unzip` binary and extracts printable-string runs
+  (`extractPrintableStrings`, a dependency-free `strings`-equivalent) from
+  every file inside, reusing `js-intel.ts`'s own `SECRET_PATTERNS`/
+  `fingerprint` for secret detection (one ruleset, not two). Proven
+  end-to-end against a real ZIP archive containing a dex-header-shaped
+  binary blob with an embedded URL and an AWS-key-shaped string — both
+  found, the secret's full value never retained. Deliberately **not**
+  registered in the default tool registry (the same reasoning
+  `default-registry.ts` already gives for excluding Shannon): it needs a
+  real local file path no `HuntAction.targetRef` can supply, so it has no
+  business competing for a slot in the round loop's automatic tool
+  selection.
+- **GitHub secret-dorking** (`recon/github-dork.ts`,
+  `tools/github-dork-adapter.ts`) and **cross-asset correlation via Shodan**
+  (`recon/asset-correlation.ts`, `tools/asset-correlation-adapter.ts`).
+  Built against each provider's real, public, documented REST API (GitHub's
+  `GET /search/code`, Shodan's `GET /shodan/host/search`) — not guessed.
+  GitHub dorking only ever reports a code-search hit whose matched fragment
+  also matches a real `SECRET_PATTERNS` entry (a bare domain mention alone
+  is not reported), and only ever searches for the *target's own* domain —
+  never scans unrelated code. Shodan correlation only ever queries by a
+  signal the target's own confirmed infrastructure already produced (its
+  org name, a certificate common name already observed on a confirmed
+  host) — this is never a request to scan the internet; it queries an
+  index a third party already built under its own authorization, filtered
+  to the target's own footprint. **Neither has ever made a real network
+  call in this codebase's own test suite** — no `GITHUB_TOKEN`/
+  `SHODAN_API_KEY` was available in the session that wrote them.
+  `capability()` on both correctly reports the missing credential (the
+  same discipline as `ChaosAdapter`/`PDCP_API_KEY`), and both are
+  unit-tested against an injected `fetch` only — do not read that as
+  equivalent to a real query having ever happened; neither is registered
+  in the default tool registry, so an unconfigured credential can never
+  silently no-op inside every hunt forever.
+
+**What this does not do:** none of the above turns this into "elite hunter"
+tooling on its own. The single largest factor in actually finding
+bounty-worthy bugs — deep, accumulated business-logic judgment on a
+specific target — has no code path here or anywhere else; it is what a
+human brings. These seven additions close specific, real capability gaps
+in the recon layer; they do not substitute for that judgment, and nothing
+in this package claims otherwise.
+
 ## Next phase
 
 1. Give `HackerOneApiIntake` and a real `HackerOneApiDisclosedReportProvider`

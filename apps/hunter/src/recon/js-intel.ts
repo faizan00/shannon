@@ -51,7 +51,7 @@ const WEBPACK_CHUNK_NAME_PATTERN = /webpackChunkName\s*:\s*["'`]([^"'`]+)["'`]/g
 const CLIENT_STATE_TRANSITION_PATTERN =
   /\b(?:history\.pushState\(|history\.replaceState\(|useNavigate\(\s*\)\s*\(|router\.(?:push|replace)\s*\(|navigate\s*\(\s*["'`])/;
 
-const SECRET_PATTERNS: readonly { readonly name: string; readonly pattern: RegExp }[] = [
+export const SECRET_PATTERNS: readonly { readonly name: string; readonly pattern: RegExp }[] = [
   { name: 'aws-access-key', pattern: /AKIA[0-9A-Z]{16}/g },
   { name: 'jwt-like-token', pattern: /eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g },
   {
@@ -60,7 +60,7 @@ const SECRET_PATTERNS: readonly { readonly name: string; readonly pattern: RegEx
   },
 ];
 
-function fingerprint(value: string): string {
+export function fingerprint(value: string): string {
   return `${value.slice(0, 4)}…(${value.length} chars, redacted)`;
 }
 

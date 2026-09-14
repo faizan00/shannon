@@ -137,6 +137,42 @@ test('buildInputFromAction builds { endpointUrl, assetRef, engagementId, headers
   assert.equal(withoutConfig.ok, false);
 });
 
+test('buildInputFromAction builds { baseDomain, seedWords } for subdomain-bruteforce, defaulting seedWords to the registrable-domain label', () => {
+  const result = buildInputFromAction(
+    'subdomain-bruteforce',
+    action({ targetRef: 'https://app.acmecorp.com/search' }),
+    BASE_CTX,
+  );
+  assert.equal(result.ok, true);
+  if (result.ok) assert.deepEqual(result.value, { baseDomain: 'app.acmecorp.com', seedWords: ['acmecorp'] });
+});
+
+test('buildInputFromAction honors an explicit subdomainSeedWords/subdomainDiscoveredTokens override for subdomain-bruteforce', () => {
+  const result = buildInputFromAction('subdomain-bruteforce', action({ targetRef: 'https://app.acmecorp.com' }), {
+    ...BASE_CTX,
+    subdomainSeedWords: ['acme', 'widgetco'],
+    subdomainDiscoveredTokens: ['billing'],
+  });
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.value, {
+      baseDomain: 'app.acmecorp.com',
+      seedWords: ['acme', 'widgetco'],
+      discoveredTokens: ['billing'],
+    });
+  }
+});
+
+test('buildInputFromAction builds { seedWords } for cloud-bucket-discovery, defaulting to the registrable-domain label', () => {
+  const result = buildInputFromAction(
+    'cloud-bucket-discovery',
+    action({ targetRef: 'https://app.acmecorp.com/search' }),
+    BASE_CTX,
+  );
+  assert.equal(result.ok, true);
+  if (result.ok) assert.deepEqual(result.value, { seedWords: ['acmecorp'] });
+});
+
 test('buildInputFromAction rejects a tool name it has no rule for', () => {
   const result = buildInputFromAction('not-a-real-tool', action(), BASE_CTX);
   assert.equal(result.ok, false);

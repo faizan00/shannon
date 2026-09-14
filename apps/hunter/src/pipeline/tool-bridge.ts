@@ -51,6 +51,12 @@ export interface BuildInputContext {
   readonly amassOutputDir?: string;
   /** Required to select BehavioralTestAdapter, keyed by the action's targetRef. */
   readonly behavioralAuthStatesByAsset?: ReadonlyMap<string, AuthStateHeaders>;
+  /** Overrides the default (derived-from-target) vocabulary for SubdomainBruteforceAdapter. */
+  readonly subdomainSeedWords?: readonly string[];
+  /** Amplification loop input for SubdomainBruteforceAdapter -- see `wordlist-generator.ts:extractCandidateTokens`. */
+  readonly subdomainDiscoveredTokens?: readonly string[];
+  /** Overrides the default (derived-from-target) vocabulary for CloudBucketAdapter. */
+  readonly cloudBucketSeedWords?: readonly string[];
 }
 
 function hostFromTargetRef(targetRef: string): string {
@@ -70,6 +76,13 @@ function urlFromTargetRef(targetRef: string): string {
 }
 
 const DOMAIN_ONLY_TOOLS = new Set(['subfinder', 'chaos', 'gau', 'waybackurls', 'certificate-transparency']);
+
+/** A reasonable default amplification seed when the caller supplies none explicitly: the registrable-domain label (example.com -> "example"), a rough but workable heuristic without a public-suffix-list dependency. */
+function registrableLabelFromTargetRef(targetRef: string): string {
+  const host = hostFromTargetRef(targetRef);
+  const labels = host.split('.');
+  return labels.length >= 2 ? (labels[labels.length - 2] as string) : host;
+}
 
 /**
  * Builds the exact typed input one named adapter needs from a generic
@@ -129,6 +142,16 @@ export function buildInputFromAction(
         headersByState,
       });
     }
+    case 'subdomain-bruteforce':
+      return ok({
+        baseDomain: hostFromTargetRef(action.targetRef),
+        seedWords: ctx.subdomainSeedWords ?? [registrableLabelFromTargetRef(action.targetRef)],
+        ...(ctx.subdomainDiscoveredTokens !== undefined ? { discoveredTokens: ctx.subdomainDiscoveredTokens } : {}),
+      });
+    case 'cloud-bucket-discovery':
+      return ok({
+        seedWords: ctx.cloudBucketSeedWords ?? [registrableLabelFromTargetRef(action.targetRef)],
+      });
     default:
       return err(`no input-building rule registered for tool "${toolName}"`);
   }
