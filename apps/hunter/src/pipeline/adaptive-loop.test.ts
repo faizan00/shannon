@@ -342,6 +342,9 @@ class HallucinatingReasoningProvider implements ReasoningProvider {
   generateHypotheses(): Promise<readonly []> {
     return Promise.resolve([]);
   }
+  findRelevantReports(): Promise<readonly []> {
+    return Promise.resolve([]);
+  }
 }
 
 test('a hallucinated action proposal is rejected by the policy gate and the loop falls back to deterministic selection, still reaching the correct outcome', async () => {

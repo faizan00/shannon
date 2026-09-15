@@ -36,6 +36,7 @@
  */
 
 import { LocalSignatureDeduplicator } from '../dedup/local-dedup.js';
+import type { H1BrainDisclosedReportRecord } from '../discovery/h1-brain-provider.js';
 import { appendEvidence, createEvidenceEntry } from '../evidence/store.js';
 import { createFinding, listFindings, saveFinding, transitionFinding, withEvidence } from '../findings/lifecycle.js';
 import { LocalFileIntake } from '../intake/hackerone.js';
@@ -49,6 +50,7 @@ import {
   markActionSkipped,
   selectNextBestAction,
 } from '../reasoning/actions.js';
+import { findRelevantDisclosedReports, relevantReportMatchToObservation } from '../reasoning/disclosed-report-rag.js';
 import { hypothesesFromObservations, updateHypothesisWithObservation } from '../reasoning/hypothesis.js';
 import { DEFAULT_BUDGET, evaluateProposal, type PolicyContext, type ToolRateLimiter } from '../reasoning/policy.js';
 import {
@@ -160,6 +162,8 @@ export interface AdaptiveHuntInput {
   readonly activeSources: readonly ReconSource[];
   readonly jsArtifacts: readonly JsArtifactInput[];
   readonly behavioralFixtures: readonly BehavioralFixtureInput[];
+  /** Operator-supplied disclosed-report content for semantic RAG (reasoning/disclosed-report-rag.ts) — from the same H1BrainSnapshot file used for program discovery, never fetched live by this package. Omitted or empty is a zero-cost no-op. */
+  readonly disclosedReports?: readonly H1BrainDisclosedReportRecord[];
   /** action-kind::target -> fixture, consulted for every action kind except "shannon" (see shannonOutputsByAsset). */
   readonly investigationFixtures: ReadonlyMap<string, InvestigationFixture>;
   /** assetRef -> path to a captured Shannon report.json-shaped file, ingested only when a "shannon" action targets that asset and liveShannon is not confirmed. */
@@ -555,10 +559,35 @@ export async function runAdaptiveHunt(input: AdaptiveHuntInput): Promise<Result<
       `observe (behavioral): compared ${input.behavioralFixtures.length} endpoint/auth-state matrix/es, ${behavioralObservations.length} observation(s)`,
     );
 
+    // === UNDERSTAND (disclosed-report semantic RAG) ===
+    // A one-time enrichment call, not a per-round decision -- always goes
+    // through router.primary (the cheap tier) directly rather than
+    // model-tier.ts:chooseModelTier, which is shaped around per-round
+    // WorldModelSnapshot candidates. Skipped entirely, zero cost, when the
+    // operator supplied no disclosed-report content.
+    const ragObservations: Observation[] = [];
+    const disclosedReports = input.disclosedReports ?? [];
+    if (disclosedReports.length > 0) {
+      const ragContextObservations = [...jsObservations, ...behavioralObservations, ...ndayObservations];
+      const ragResult = await findRelevantDisclosedReports(ragContextObservations, disclosedReports, reasoningRouter);
+      if (ragResult.ok) {
+        for (const match of ragResult.value) {
+          const observation = relevantReportMatchToObservation(match, engagement.id);
+          if (observation) ragObservations.push(observation);
+        }
+        log.push(
+          `understand (disclosed-report rag): checked ${disclosedReports.length} disclosed report(s), ${ragObservations.length} relevant match(es) folded in`,
+        );
+      } else {
+        log.push(`understand (disclosed-report rag): relevance ranking failed, skipped: ${ragResult.error}`);
+      }
+    }
+
     const bootstrapObservations = filterInScopeObservations(program, [
       ...jsObservations,
       ...behavioralObservations,
       ...ndayObservations,
+      ...ragObservations,
     ]);
     await appendObservations(input.workspaceDir, engagement.id, bootstrapObservations);
     allObservations = [...allObservations, ...bootstrapObservations];

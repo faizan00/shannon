@@ -126,6 +126,9 @@ class FailingProvider implements ReasoningProvider {
   generateHypotheses(): Promise<readonly []> {
     return Promise.resolve([]);
   }
+  findRelevantReports(): Promise<readonly []> {
+    return Promise.resolve([]);
+  }
 }
 
 test('selectNextBestActionWithFallback falls back to the heuristic provider when the tiered provider throws, and reports why', async () => {
@@ -172,6 +175,9 @@ class StubProvider implements ReasoningProvider {
     });
   }
   generateHypotheses(): Promise<readonly []> {
+    return Promise.resolve([]);
+  }
+  findRelevantReports(): Promise<readonly []> {
     return Promise.resolve([]);
   }
 }

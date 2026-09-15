@@ -1,7 +1,31 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { WorldModelSnapshot } from '../types.js';
+import type { H1BrainDisclosedReportRecord } from '../discovery/h1-brain-provider.js';
+import type { Observation, WorldModelSnapshot } from '../types.js';
 import { ClaudeReasoningProvider } from './claude-provider.js';
+
+const OBSERVATION: Observation = {
+  id: 'obs-1',
+  engagementId: 'e1',
+  source: 'passive-recon',
+  assetRef: 'https://app.example.com/search',
+  vulnClass: 'xss',
+  title: 'search reflects input',
+  description: 'x',
+  severityHint: 'medium',
+  confidenceHint: 'low',
+  verified: false,
+  tags: [],
+  collectedAt: new Date().toISOString(),
+};
+
+const DISCLOSED_REPORT: H1BrainDisclosedReportRecord = {
+  id: 42,
+  title: 'Reflected XSS in search',
+  program: 'other-corp',
+  weakness: 'Cross-site Scripting (XSS) - Reflected',
+  writeup: 'A reflected XSS was found in the search parameter.',
+};
 
 function fakeAnthropicResponse(toolName: string, input: unknown): Response {
   return new Response(JSON.stringify({ content: [{ type: 'tool_use', name: toolName, input }] }), {
@@ -167,4 +191,67 @@ test('generateHypotheses validates every proposed hypothesis in the array', asyn
   );
   assert.equal(proposals.length, 1);
   assert.equal(proposals[0]?.vulnClass, 'xss');
+});
+
+test('findRelevantReports returns an empty array without calling the API when there are no candidate reports', async () => {
+  let called = false;
+  const provider = new ClaudeReasoningProvider({
+    apiKey: 'fake',
+    fetchImpl: (async () => {
+      called = true;
+      throw new Error('should not be called');
+    }) as typeof fetch,
+  });
+  assert.deepEqual(await provider.findRelevantReports([OBSERVATION], []), []);
+  assert.equal(called, false);
+});
+
+test('findRelevantReports validates and returns a well-formed match', async () => {
+  const fakeFetch = (async () =>
+    fakeAnthropicResponse('find_relevant_reports', {
+      matches: [
+        {
+          reportId: DISCLOSED_REPORT.id,
+          relatedAssetRef: OBSERVATION.assetRef,
+          relevanceRationale: 'same reflected-XSS mechanism',
+          suggestedNextInvestigation: 'try the same payload shape',
+        },
+      ],
+    })) as typeof fetch;
+  const provider = new ClaudeReasoningProvider({ apiKey: 'fake', fetchImpl: fakeFetch });
+  const proposals = await provider.findRelevantReports([OBSERVATION], [DISCLOSED_REPORT]);
+  assert.equal(proposals.length, 1);
+  assert.equal(proposals[0]?.reportId, DISCLOSED_REPORT.id);
+});
+
+test('findRelevantReports silently drops a match referencing an unknown report id, never trusting a hallucinated one', async () => {
+  const fakeFetch = (async () =>
+    fakeAnthropicResponse('find_relevant_reports', {
+      matches: [
+        {
+          reportId: 9999,
+          relatedAssetRef: OBSERVATION.assetRef,
+          relevanceRationale: 'x',
+          suggestedNextInvestigation: 'x',
+        },
+      ],
+    })) as typeof fetch;
+  const provider = new ClaudeReasoningProvider({ apiKey: 'fake', fetchImpl: fakeFetch });
+  assert.deepEqual(await provider.findRelevantReports([OBSERVATION], [DISCLOSED_REPORT]), []);
+});
+
+test('findRelevantReports silently drops a match referencing an unknown asset ref, never trusting a hallucinated one', async () => {
+  const fakeFetch = (async () =>
+    fakeAnthropicResponse('find_relevant_reports', {
+      matches: [
+        {
+          reportId: DISCLOSED_REPORT.id,
+          relatedAssetRef: 'https://not-a-real-engagement-asset.example.com',
+          relevanceRationale: 'x',
+          suggestedNextInvestigation: 'x',
+        },
+      ],
+    })) as typeof fetch;
+  const provider = new ClaudeReasoningProvider({ apiKey: 'fake', fetchImpl: fakeFetch });
+  assert.deepEqual(await provider.findRelevantReports([OBSERVATION], [DISCLOSED_REPORT]), []);
 });

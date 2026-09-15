@@ -1,8 +1,32 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type { H1BrainDisclosedReportRecord } from '../discovery/h1-brain-provider.js';
 import type { CaptureResult } from '../recon/cli-adapters.js';
-import type { WorldModelSnapshot } from '../types.js';
+import type { Observation, WorldModelSnapshot } from '../types.js';
 import { ClaudeCodeReasoningProvider } from './claude-code-provider.js';
+
+const OBSERVATION: Observation = {
+  id: 'obs-1',
+  engagementId: 'e1',
+  source: 'passive-recon',
+  assetRef: 'https://app.example.com/search',
+  vulnClass: 'xss',
+  title: 'search reflects input',
+  description: 'x',
+  severityHint: 'medium',
+  confidenceHint: 'low',
+  verified: false,
+  tags: [],
+  collectedAt: new Date().toISOString(),
+};
+
+const DISCLOSED_REPORT: H1BrainDisclosedReportRecord = {
+  id: 42,
+  title: 'Reflected XSS in search',
+  program: 'other-corp',
+  weakness: 'Cross-site Scripting (XSS) - Reflected',
+  writeup: 'A reflected XSS was found in the search parameter.',
+};
 
 function fakeCapture(envelope: unknown, overrides: Partial<CaptureResult> = {}): CaptureResult {
   return { stdout: JSON.stringify(envelope), stderr: '', exitCode: 0, timedOut: false, ...overrides };
@@ -239,4 +263,58 @@ test('generateHypotheses validates every proposed hypothesis in the array', asyn
   );
   assert.equal(proposals.length, 1);
   assert.equal(proposals[0]?.vulnClass, 'xss');
+});
+
+test('findRelevantReports returns an empty array without spawning claude when there are no candidate reports', async () => {
+  let called = false;
+  const provider = new ClaudeCodeReasoningProvider({
+    spawnCaptureImpl: async () => {
+      called = true;
+      throw new Error('should not be called');
+    },
+  });
+  assert.deepEqual(await provider.findRelevantReports([OBSERVATION], []), []);
+  assert.equal(called, false);
+});
+
+test('findRelevantReports validates and returns a well-formed match', async () => {
+  const provider = new ClaudeCodeReasoningProvider({
+    spawnCaptureImpl: async () =>
+      fakeCapture({
+        is_error: false,
+        structured_output: {
+          matches: [
+            {
+              reportId: DISCLOSED_REPORT.id,
+              relatedAssetRef: OBSERVATION.assetRef,
+              relevanceRationale: 'same reflected-XSS mechanism',
+              suggestedNextInvestigation: 'try the same payload shape',
+            },
+          ],
+        },
+      }),
+  });
+  const proposals = await provider.findRelevantReports([OBSERVATION], [DISCLOSED_REPORT]);
+  assert.equal(proposals.length, 1);
+  assert.equal(proposals[0]?.reportId, DISCLOSED_REPORT.id);
+});
+
+test('findRelevantReports silently drops a match referencing an unknown report id or asset ref, never trusting a hallucinated one', async () => {
+  const provider = new ClaudeCodeReasoningProvider({
+    spawnCaptureImpl: async () =>
+      fakeCapture({
+        is_error: false,
+        structured_output: {
+          matches: [
+            {
+              reportId: 9999,
+              relatedAssetRef: OBSERVATION.assetRef,
+              relevanceRationale: 'x',
+              suggestedNextInvestigation: 'x',
+            },
+          ],
+        },
+      }),
+  });
+  assert.deepEqual(await provider.findRelevantReports([OBSERVATION], [DISCLOSED_REPORT]), []);
 });

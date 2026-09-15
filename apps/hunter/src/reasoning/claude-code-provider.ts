@@ -49,16 +49,25 @@
  * Claude subscription's usage on every Hunter round.
  */
 
+import type { H1BrainDisclosedReportRecord } from '../discovery/h1-brain-provider.js';
 import { spawnCapture } from '../recon/cli-adapters.js';
-import type { ActionProposal, HypothesisProposal, Observation, WorldModelSnapshot } from '../types.js';
+import type {
+  ActionProposal,
+  HypothesisProposal,
+  Observation,
+  RelevantReportProposal,
+  WorldModelSnapshot,
+} from '../types.js';
 import {
   ACTION_PROPOSAL_TOOL,
   buildActionSelectionPrompt,
   buildHypothesisPrompt,
+  buildRelevantReportsPrompt,
   HYPOTHESIS_PROPOSAL_TOOL,
+  RELEVANT_REPORTS_TOOL,
 } from './claude-provider.js';
 import type { ReasoningProvider } from './provider.js';
-import { validateActionProposal, validateHypothesisProposal } from './schema.js';
+import { validateActionProposal, validateHypothesisProposal, validateRelevantReportProposal } from './schema.js';
 
 export interface ClaudeCodeReasoningProviderOptions {
   /** Model alias/name forwarded to `claude --model`. Defaults to the CLI's own default model. */
@@ -155,6 +164,34 @@ export class ClaudeCodeReasoningProvider implements ReasoningProvider {
       const validated = validateHypothesisProposal(raw);
       if (!validated.ok) {
         throw new Error(`Claude Code's hypothesis proposal failed schema validation: ${validated.error}`);
+      }
+      proposals.push(validated.value);
+    }
+    return proposals;
+  }
+
+  async findRelevantReports(
+    observations: readonly Observation[],
+    disclosedReports: readonly H1BrainDisclosedReportRecord[],
+  ): Promise<readonly RelevantReportProposal[]> {
+    if (disclosedReports.length === 0) {
+      return [];
+    }
+    const prompt = buildRelevantReportsPrompt(observations, disclosedReports);
+    const output = await this.invoke(prompt, RELEVANT_REPORTS_TOOL.input_schema);
+    if (typeof output !== 'object' || output === null || !Array.isArray((output as Record<string, unknown>).matches)) {
+      throw new Error('Claude Code\'s relevant-reports proposal did not include a "matches" array');
+    }
+    const validKnownIds = new Set(disclosedReports.map((r) => r.id));
+    const validAssetRefs = new Set(observations.map((o) => o.assetRef));
+    const proposals: RelevantReportProposal[] = [];
+    for (const raw of (output as { matches: readonly unknown[] }).matches) {
+      const validated = validateRelevantReportProposal(raw);
+      if (!validated.ok) {
+        throw new Error(`Claude Code's relevant-reports proposal failed schema validation: ${validated.error}`);
+      }
+      if (!validKnownIds.has(validated.value.reportId) || !validAssetRefs.has(validated.value.relatedAssetRef)) {
+        continue;
       }
       proposals.push(validated.value);
     }

@@ -46,6 +46,28 @@ export interface H1BrainScopeRecord {
   readonly instruction?: string;
 }
 
+/**
+ * One report, as `search_disclosed_reports`/`get_disclosed_report` actually
+ * shape it — verified against a real, live call to both tools, not assumed
+ * from documentation alone: `id`/`title`/`program` handle/`weakness` (h1-brain's
+ * own free-text category, e.g. `"Cross-site Scripting (XSS) - Reflected"`,
+ * not one of this package's own short `vulnClass` keys) are always present;
+ * `bounty` may be absent (an unpaid/informational disclosure); `asset` may
+ * be absent when h1-brain did not attribute the report to a specific scoped
+ * asset; `writeup` is the full markdown body (`get_disclosed_report`'s
+ * "Vulnerability Details"/"Impact" sections) that
+ * `reasoning/disclosed-report-rag.ts` reasons over.
+ */
+export interface H1BrainDisclosedReportRecord {
+  readonly id: number;
+  readonly title: string;
+  readonly program: string;
+  readonly weakness: string;
+  readonly bounty?: number;
+  readonly asset?: { readonly identifier: string; readonly type: string };
+  readonly writeup: string;
+}
+
 /** One program, as the operator/agent assembles it from `search_programs` + `fetch_program_scopes` + (optionally) `hack(handle)`/`search_disclosed_reports`. Every field beyond `handle`/`name` is optional — an absent field simply yields no signal for it, never a guess. */
 export interface H1BrainProgramRecord {
   readonly handle: string;
@@ -94,6 +116,15 @@ export interface H1BrainProgramRecord {
   readonly disclosed_report_provider_status?: 'ok' | 'no_match' | 'provider_error' | 'contaminated' | 'unavailable';
   /** Distinct weakness types seen across those disclosed reports. Same usability gating as `disclosed_report_count`. */
   readonly disclosed_weakness_types?: readonly string[];
+  /**
+   * The actual disclosed-report content (title/weakness/writeup), for
+   * `reasoning/disclosed-report-rag.ts`'s relevance ranking — distinct from
+   * `disclosed_report_count`/`disclosed_weakness_types` above, which are
+   * aggregate signals for program-discovery scoring, not retrievable text.
+   * Absent entirely for a snapshot that only ran `search_disclosed_reports`
+   * for its count, never populated with an invented or truncated writeup.
+   */
+  readonly disclosed_reports?: readonly H1BrainDisclosedReportRecord[];
   /** ISO timestamp of the program's most recent scope/policy update, if known. */
   readonly last_updated_at?: string;
   /** When the snapshot itself was taken. */

@@ -12,13 +12,15 @@ const CLI_PATH = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 const BUNDLED_DATASET = fileURLToPath(new URL('../fixtures/discovery/programs.json', import.meta.url));
 const FIXED_NOW = '1757800000000';
 
-async function run(args: readonly string[]): Promise<{ readonly stdout: string; readonly code: number }> {
+async function run(
+  args: readonly string[],
+): Promise<{ readonly stdout: string; readonly stderr: string; readonly code: number }> {
   try {
-    const { stdout } = await execFileAsync('node', [CLI_PATH, ...args]);
-    return { stdout, code: 0 };
+    const { stdout, stderr } = await execFileAsync('node', [CLI_PATH, ...args]);
+    return { stdout, stderr, code: 0 };
   } catch (error) {
-    const e = error as { stdout?: string; code?: number };
-    return { stdout: e.stdout ?? '', code: e.code ?? 1 };
+    const e = error as { stdout?: string; stderr?: string; code?: number };
+    return { stdout: e.stdout ?? '', stderr: e.stderr ?? '', code: e.code ?? 1 };
   }
 }
 
@@ -176,6 +178,118 @@ test('hunt --simulate --resume recovers a real engagement whose checkpoint is co
     ]);
     assert.equal(resumed.code, 0, `expected recovery, got: ${resumed.stdout}`);
     const parsed = JSON.parse(resumed.stdout);
+    assert.equal(parsed.ok, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// === --h1-brain-snapshot / --h1-brain-program (reasoning/disclosed-report-rag.ts) ===
+
+test('hunt --simulate with a valid --h1-brain-snapshot/--h1-brain-program succeeds and runs to completion', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hunter-cli-h1brain-ok-'));
+  try {
+    const snapshotPath = join(dir, 'h1-brain-snapshot.json');
+    await writeFile(
+      snapshotPath,
+      JSON.stringify({
+        programs: [
+          {
+            handle: 'example-corp',
+            name: 'Example Corp',
+            snapshot_at: '2026-01-01T00:00:00.000Z',
+            disclosed_reports: [
+              {
+                id: 1,
+                title: 'Reflected XSS in search',
+                program: 'example-corp',
+                weakness: 'Cross-site Scripting (XSS) - Reflected',
+                writeup: 'A reflected XSS was found in the search parameter.',
+              },
+            ],
+          },
+        ],
+      }),
+      'utf8',
+    );
+    const result = await run([
+      'hunt',
+      '--simulate',
+      '--workspace-dir',
+      dir,
+      '--engagement-id',
+      'h1brain-ok',
+      '--h1-brain-snapshot',
+      snapshotPath,
+      '--h1-brain-program',
+      'example-corp',
+    ]);
+    assert.equal(result.code, 0, `expected success, got: ${result.stdout}`);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.ok, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('hunt --simulate --h1-brain-snapshot fails clearly when no program in the snapshot matches --h1-brain-program', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hunter-cli-h1brain-nomatch-'));
+  try {
+    const snapshotPath = join(dir, 'h1-brain-snapshot.json');
+    await writeFile(
+      snapshotPath,
+      JSON.stringify({
+        programs: [{ handle: 'other-corp', name: 'Other Corp', snapshot_at: '2026-01-01T00:00:00.000Z' }],
+      }),
+      'utf8',
+    );
+    const result = await run([
+      'hunt',
+      '--simulate',
+      '--workspace-dir',
+      dir,
+      '--engagement-id',
+      'h1brain-nomatch',
+      '--h1-brain-snapshot',
+      snapshotPath,
+      '--h1-brain-program',
+      'example-corp',
+    ]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /no program with handle "example-corp"/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('hunt --simulate --h1-brain-snapshot without --h1-brain-program fails clearly rather than guessing a program', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hunter-cli-h1brain-noprogram-'));
+  try {
+    const snapshotPath = join(dir, 'h1-brain-snapshot.json');
+    await writeFile(snapshotPath, JSON.stringify({ programs: [] }), 'utf8');
+    const result = await run([
+      'hunt',
+      '--simulate',
+      '--workspace-dir',
+      dir,
+      '--engagement-id',
+      'h1brain-noprogram',
+      '--h1-brain-snapshot',
+      snapshotPath,
+    ]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /missing required --h1-brain-program/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('hunt --simulate omits disclosedReports entirely (zero-cost no-op) when --h1-brain-snapshot is not given', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hunter-cli-h1brain-omitted-'));
+  try {
+    const result = await run(['hunt', '--simulate', '--workspace-dir', dir, '--engagement-id', 'h1brain-omitted']);
+    assert.equal(result.code, 0, `expected success, got: ${result.stdout}`);
+    const parsed = JSON.parse(result.stdout);
     assert.equal(parsed.ok, true);
   } finally {
     await rm(dir, { recursive: true, force: true });

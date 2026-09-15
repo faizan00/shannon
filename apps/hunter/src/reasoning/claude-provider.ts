@@ -17,9 +17,16 @@
  * errors — never silently coerced into a usable-looking proposal.
  */
 
-import type { ActionProposal, HypothesisProposal, Observation, WorldModelSnapshot } from '../types.js';
+import type { H1BrainDisclosedReportRecord } from '../discovery/h1-brain-provider.js';
+import type {
+  ActionProposal,
+  HypothesisProposal,
+  Observation,
+  RelevantReportProposal,
+  WorldModelSnapshot,
+} from '../types.js';
 import type { ReasoningProvider } from './provider.js';
-import { validateActionProposal, validateHypothesisProposal } from './schema.js';
+import { validateActionProposal, validateHypothesisProposal, validateRelevantReportProposal } from './schema.js';
 
 export const ACTION_PROPOSAL_TOOL = {
   name: 'select_next_best_action',
@@ -96,6 +103,41 @@ export const HYPOTHESIS_PROPOSAL_TOOL = {
       },
     },
     required: ['hypotheses'],
+  },
+} as const;
+
+export const RELEVANT_REPORTS_TOOL = {
+  name: 'find_relevant_reports',
+  description:
+    'Identify which of the candidate disclosed reports, if any, are genuinely technically relevant to the current engagement -- a real similarity in vulnerability mechanism, affected component, or attack surface, not merely the same weakness category label or the same platform. Only include a report you would actually point a human researcher at.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      matches: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            reportId: {
+              type: 'number',
+              description: 'Must be one of the candidate report ids given below -- never invent one.',
+            },
+            relatedAssetRef: {
+              type: 'string',
+              description:
+                "Must be one of the current engagement observations' own assetRef values given below -- the specific current-engagement asset this report's technique might apply to. Never invent one and never use the historical report's own asset.",
+            },
+            relevanceRationale: { type: 'string', description: 'Why this specific report is genuinely relevant.' },
+            suggestedNextInvestigation: {
+              type: 'string',
+              description: 'What this report suggests trying against the current engagement, concretely.',
+            },
+          },
+          required: ['reportId', 'relatedAssetRef', 'relevanceRationale', 'suggestedNextInvestigation'],
+        },
+      },
+    },
+    required: ['matches'],
   },
 } as const;
 
@@ -195,6 +237,37 @@ export class ClaudeReasoningProvider implements ReasoningProvider {
     }
     return proposals;
   }
+
+  async findRelevantReports(
+    observations: readonly Observation[],
+    disclosedReports: readonly H1BrainDisclosedReportRecord[],
+  ): Promise<readonly RelevantReportProposal[]> {
+    if (disclosedReports.length === 0) {
+      return [];
+    }
+    const prompt = buildRelevantReportsPrompt(observations, disclosedReports);
+    const input = await this.callTool(RELEVANT_REPORTS_TOOL.name, RELEVANT_REPORTS_TOOL, prompt);
+    if (typeof input !== 'object' || input === null || !Array.isArray((input as Record<string, unknown>).matches)) {
+      throw new Error('Claude\'s relevant-reports proposal did not include a "matches" array');
+    }
+    const validKnownIds = new Set(disclosedReports.map((r) => r.id));
+    const validAssetRefs = new Set(observations.map((o) => o.assetRef));
+    const proposals: RelevantReportProposal[] = [];
+    for (const raw of (input as { matches: readonly unknown[] }).matches) {
+      const validated = validateRelevantReportProposal(raw);
+      if (!validated.ok) {
+        throw new Error(`Claude's relevant-reports proposal failed schema validation: ${validated.error}`);
+      }
+      // Never trust a hallucinated report id or asset ref -- same
+      // discipline `policy.ts` applies to action proposals against
+      // `candidateActions`.
+      if (!validKnownIds.has(validated.value.reportId) || !validAssetRefs.has(validated.value.relatedAssetRef)) {
+        continue;
+      }
+      proposals.push(validated.value);
+    }
+    return proposals;
+  }
 }
 
 export function buildActionSelectionPrompt(snapshot: WorldModelSnapshot): string {
@@ -231,5 +304,36 @@ export function buildHypothesisPrompt(observations: readonly Observation[], enga
       })),
     ),
     'Call propose_hypotheses.',
+  ].join('\n');
+}
+
+const WRITEUP_EXCERPT_MAX_CHARS = 1500;
+
+export function buildRelevantReportsPrompt(
+  observations: readonly Observation[],
+  disclosedReports: readonly H1BrainDisclosedReportRecord[],
+): string {
+  return [
+    'You are the reasoning layer of an authorized security-research controller (Hunter).',
+    "Below are the observations collected so far on the current engagement, and a set of candidate historical HackerOne disclosed reports (from other programs/researchers) that might be technically relevant. For every match you report, relatedAssetRef must be exactly one of the assetRef values from the current engagement observations below -- never the historical report's own asset, and never invented.",
+    'Current engagement observations:',
+    JSON.stringify(
+      observations.map((o) => ({
+        assetRef: o.assetRef,
+        vulnClass: o.vulnClass,
+        title: o.title,
+        description: o.description,
+      })),
+    ),
+    'Candidate disclosed reports:',
+    JSON.stringify(
+      disclosedReports.map((r) => ({
+        id: r.id,
+        title: r.title,
+        weakness: r.weakness,
+        writeupExcerpt: r.writeup.slice(0, WRITEUP_EXCERPT_MAX_CHARS),
+      })),
+    ),
+    'Call find_relevant_reports with only the reports that are genuinely, technically relevant -- an empty "matches" array is a correct answer when none are.',
   ].join('\n');
 }

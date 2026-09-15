@@ -69,3 +69,12 @@ test('generateHypotheses proposes one hypothesis per (vulnClass, assetRef) clust
   assert.equal(proposals.length, 2);
   assert.ok(proposals.every((p) => p.supportingObservationIds.length > 0));
 });
+
+test('findRelevantReports always returns [] -- no real semantic judgment available without a model', async () => {
+  const provider = new HeuristicReasoningProvider();
+  const proposals = await provider.findRelevantReports(
+    [observation()],
+    [{ id: 1, title: 'Reflected XSS', program: 'other-corp', weakness: 'XSS', writeup: 'writeup text' }],
+  );
+  assert.deepEqual(proposals, []);
+});

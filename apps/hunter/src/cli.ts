@@ -26,6 +26,7 @@
 import { readFile } from 'node:fs/promises';
 import { buildOpportunityReport } from './discovery/decision.js';
 import { FixtureDiscoveryProvider } from './discovery/fixture-provider.js';
+import type { H1BrainDisclosedReportRecord, H1BrainSnapshot } from './discovery/h1-brain-provider.js';
 import { H1BrainSnapshotProvider } from './discovery/h1-brain-provider.js';
 import { assessProgram, assessPrograms } from './discovery/opportunity.js';
 import { explainSelection, rankPrograms, selectBestProgram } from './discovery/scoring.js';
@@ -111,6 +112,33 @@ async function loadMemoryForWorkspace(flags: Map<string, string>): Promise<reado
   if (!workspaceDir) return [];
   const result = await loadMemory(workspaceDir);
   return result.ok ? result.value : [];
+}
+
+/**
+ * `--h1-brain-snapshot`/`--h1-brain-program` for `reasoning/disclosed-report-rag.ts`
+ * — the same operator-populated snapshot file `discover`/`rank` already
+ * use (`H1BrainSnapshotProvider`'s docstring), never fetched live by this
+ * package. Both flags are omitted by default, exactly like `liveRecon`/
+ * `liveShannon`: undefined here is a zero-cost no-op, not an error.
+ */
+async function loadDisclosedReportsForHunt(
+  flags: Map<string, string>,
+): Promise<readonly H1BrainDisclosedReportRecord[] | undefined> {
+  const snapshotPath = flags.get('h1-brain-snapshot');
+  if (!snapshotPath) return undefined;
+  const programHandle = requireFlag(flags, 'h1-brain-program');
+  const raw = await readFile(snapshotPath, 'utf8');
+  let snapshot: Partial<H1BrainSnapshot>;
+  try {
+    snapshot = JSON.parse(raw) as Partial<H1BrainSnapshot>;
+  } catch (error) {
+    throw new Error(`h1-brain snapshot "${snapshotPath}" is not valid JSON: ${(error as Error).message}`);
+  }
+  const program = (snapshot.programs ?? []).find((p) => p.handle === programHandle);
+  if (!program) {
+    throw new Error(`h1-brain snapshot "${snapshotPath}" has no program with handle "${programHandle}"`);
+  }
+  return program.disclosed_reports ?? [];
 }
 
 async function runScopeValidate(flags: Map<string, string>): Promise<number> {
@@ -586,9 +614,11 @@ async function runHunt(flags: Map<string, string>): Promise<number> {
     }
   }
 
+  const disclosedReports = await loadDisclosedReportsForHunt(flags);
   const input = await buildBundledSimulationInput({ engagementId, workspaceDir, maxRounds });
   const result = await runAdaptiveHunt({
     ...input,
+    ...(disclosedReports !== undefined ? { disclosedReports } : {}),
     ...(maxActions !== undefined ? { budget: { maxActions: Number(maxActions) } } : {}),
   });
 

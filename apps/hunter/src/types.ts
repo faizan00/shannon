@@ -95,7 +95,8 @@ export type ObservationSource =
   | 'active-recon'
   | 'js-intelligence'
   | 'behavioral-diff'
-  | 'dependency-intelligence';
+  | 'dependency-intelligence'
+  | 'disclosed-report-intelligence';
 
 export interface Observation {
   readonly id: string;
@@ -400,6 +401,14 @@ export interface HypothesisProposal {
   readonly requiredEvidence: readonly string[];
   readonly nextInvestigation: string;
   readonly supportingObservationIds: readonly string[];
+}
+
+/** A model-backed provider's judgment that a candidate disclosed report is meaningfully relevant to the current engagement — see `reasoning/disclosed-report-rag.ts`. `reportId` must be one of the candidate reports actually offered, and `relatedAssetRef` must be one of the current engagement's own observation asset refs actually offered — a caller never trusts either as invented. */
+export interface RelevantReportProposal {
+  readonly reportId: number;
+  readonly relatedAssetRef: string;
+  readonly relevanceRationale: string;
+  readonly suggestedNextInvestigation: string;
 }
 
 export interface ReasoningDecision {
