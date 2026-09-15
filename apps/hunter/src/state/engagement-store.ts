@@ -8,8 +8,8 @@
  * so it can be inspected, diffed, and resumed without any database.
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { readFile, rename } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   type Engagement,
   err,
@@ -19,10 +19,26 @@ import {
   type Result,
   type ValidatedTarget,
 } from '../types.js';
+import { writeFileAtomic } from './atomic-write.js';
 
 export function engagementFilePath(workspaceDir: string, engagementId: string): string {
   return join(workspaceDir, 'engagements', engagementId, 'state.json');
 }
+
+/**
+ * `'not-found'` (no `state.json` at all -- a genuinely fresh engagement)
+ * must never be conflated with `'corrupted'` (a file that exists but
+ * failed to read/parse -- real prior progress that needs quarantine, not
+ * silent overwrite). Every sibling loader (`loadCheckpoint`, `loadWorldModel`,
+ * `loadProvenanceGraph`, `loadStateGraph`) already makes this distinction;
+ * `loadEngagement` previously did not, and its caller
+ * (`pipeline/adaptive-loop.ts`) silently created and saved a fresh empty
+ * engagement over a corrupted one either way -- irreversibly destroying
+ * whatever the corrupted file actually contained.
+ */
+export type EngagementLoadError =
+  | { readonly kind: 'not-found' }
+  | { readonly kind: 'corrupted'; readonly message: string };
 
 export interface CreateEngagementInput {
   readonly id: string;
@@ -47,22 +63,51 @@ export function newEngagement(input: CreateEngagementInput): Engagement {
 
 export async function saveEngagement(workspaceDir: string, engagement: Engagement): Promise<void> {
   const filePath = engagementFilePath(workspaceDir, engagement.id);
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, `${JSON.stringify(engagement, null, 2)}\n`, 'utf8');
+  await writeFileAtomic(filePath, `${JSON.stringify(engagement, null, 2)}\n`);
 }
 
-export async function loadEngagement(workspaceDir: string, engagementId: string): Promise<Result<Engagement, string>> {
+export async function loadEngagement(
+  workspaceDir: string,
+  engagementId: string,
+): Promise<Result<Engagement, EngagementLoadError>> {
   const filePath = engagementFilePath(workspaceDir, engagementId);
   let raw: string;
   try {
     raw = await readFile(filePath, 'utf8');
   } catch (error) {
-    return err(`could not read engagement state "${filePath}": ${(error as Error).message}`);
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return err({ kind: 'not-found' });
+    }
+    return err({
+      kind: 'corrupted',
+      message: `could not read engagement state "${filePath}": ${(error as Error).message}`,
+    });
   }
   try {
     return ok(JSON.parse(raw) as Engagement);
   } catch (error) {
-    return err(`engagement state "${filePath}" is not valid JSON: ${(error as Error).message}`);
+    return err({
+      kind: 'corrupted',
+      message: `engagement state "${filePath}" is not valid JSON: ${(error as Error).message}`,
+    });
+  }
+}
+
+/** Moves a corrupted `state.json` aside — never deletes it, so it stays available for forensics — and returns the quarantine path. Mirrors `checkpoint.ts:quarantineCorruptedCheckpoint` exactly. */
+export async function quarantineCorruptedEngagementState(
+  workspaceDir: string,
+  engagementId: string,
+): Promise<Result<string | undefined, string>> {
+  const filePath = engagementFilePath(workspaceDir, engagementId);
+  const quarantinePath = `${filePath}.corrupted-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  try {
+    await rename(filePath, quarantinePath);
+    return ok(quarantinePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return ok(undefined);
+    }
+    return err(`could not quarantine corrupted engagement state "${filePath}": ${(error as Error).message}`);
   }
 }
 

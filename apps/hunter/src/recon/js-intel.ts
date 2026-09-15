@@ -169,9 +169,10 @@ export function analyzeJavaScript(
       confidence: 0.6,
       discoveredAt: collectedAt,
     });
+    const endpointObservationId = nextId('obs-js-endpoint');
     observations.push(
       baseObservation({
-        id: nextId('obs-js-endpoint'),
+        id: endpointObservationId,
         engagementId,
         obsSource,
         assetRef,
@@ -192,6 +193,7 @@ export function analyzeJavaScript(
         sinkRef: path,
         observation: `route "${path}" ships a dynamic segment, implying a resource identifier is passed straight through to the API`,
         confidence: 0.5,
+        sourceObservationId: endpointObservationId,
       });
     }
   }
@@ -221,9 +223,10 @@ export function analyzeJavaScript(
 
   // === DOM XSS candidate ===
   if (DOM_XSS_SOURCE_PATTERN.test(source) && DOM_XSS_SINK_PATTERN.test(source)) {
+    const domXssObservationId = nextId('obs-js-dom-xss');
     observations.push(
       baseObservation({
-        id: nextId('obs-js-dom-xss'),
+        id: domXssObservationId,
         engagementId,
         obsSource,
         assetRef,
@@ -248,14 +251,16 @@ export function analyzeJavaScript(
       sinkRef: assetRef,
       observation: `an attacker-controllable source and a DOM sink co-occur in ${sourceRef}`,
       confidence: 0.5,
+      sourceObservationId: domXssObservationId,
     });
   }
 
   // === Feature flags ===
   if (FEATURE_FLAG_PATTERN.test(source)) {
+    const featureFlagObservationId = nextId('obs-js-feature-flags');
     observations.push(
       baseObservation({
-        id: nextId('obs-js-feature-flags'),
+        id: featureFlagObservationId,
         engagementId,
         obsSource,
         assetRef,
@@ -276,6 +281,7 @@ export function analyzeJavaScript(
       sinkRef: assetRef,
       observation: 'feature-flag configuration object found in client-side JavaScript',
       confidence: 0.4,
+      sourceObservationId: featureFlagObservationId,
     });
   }
 
@@ -303,9 +309,10 @@ export function analyzeJavaScript(
 
   // === Auth/role logic ===
   if (AUTH_ROLE_LOGIC_PATTERN.test(source)) {
+    const authLogicObservationId = nextId('obs-js-auth-logic');
     observations.push(
       baseObservation({
-        id: nextId('obs-js-auth-logic'),
+        id: authLogicObservationId,
         engagementId,
         obsSource,
         assetRef,
@@ -326,6 +333,7 @@ export function analyzeJavaScript(
       sinkRef: assetRef,
       observation: 'client-side authorization logic found; server-side enforcement not yet confirmed',
       confidence: 0.45,
+      sourceObservationId: authLogicObservationId,
     });
   }
 

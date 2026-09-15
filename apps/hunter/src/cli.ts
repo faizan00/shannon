@@ -138,7 +138,42 @@ async function loadDisclosedReportsForHunt(
   if (!program) {
     throw new Error(`h1-brain snapshot "${snapshotPath}" has no program with handle "${programHandle}"`);
   }
-  return program.disclosed_reports ?? [];
+  const disclosedReports = program.disclosed_reports ?? [];
+  // H1BrainSnapshotProvider validates its own program records before ever
+  // returning them (h1-brain-provider.ts:discoverPrograms) -- disclosed
+  // report records deserve the same rigor. A malformed entry left
+  // unvalidated here would otherwise surface as a confusing, low-level
+  // TypeError deep inside reasoning/disclosed-report-rag.ts's prompt
+  // builder (e.g. undefined.slice(...)) instead of a clear message naming
+  // exactly which record and field is wrong.
+  for (const [index, record] of disclosedReports.entries()) {
+    if (typeof record.id !== 'number') {
+      throw new Error(
+        `h1-brain snapshot "${snapshotPath}" has a disclosed report at index ${index} missing a numeric "id"`,
+      );
+    }
+    if (typeof record.title !== 'string' || record.title.length === 0) {
+      throw new Error(
+        `h1-brain snapshot "${snapshotPath}" has a disclosed report (id ${record.id}) missing a non-empty "title"`,
+      );
+    }
+    if (typeof record.program !== 'string' || record.program.length === 0) {
+      throw new Error(
+        `h1-brain snapshot "${snapshotPath}" has a disclosed report (id ${record.id}) missing a non-empty "program"`,
+      );
+    }
+    if (typeof record.weakness !== 'string' || record.weakness.length === 0) {
+      throw new Error(
+        `h1-brain snapshot "${snapshotPath}" has a disclosed report (id ${record.id}) missing a non-empty "weakness"`,
+      );
+    }
+    if (typeof record.writeup !== 'string' || record.writeup.length === 0) {
+      throw new Error(
+        `h1-brain snapshot "${snapshotPath}" has a disclosed report (id ${record.id}) missing a non-empty "writeup"`,
+      );
+    }
+  }
+  return disclosedReports;
 }
 
 async function runScopeValidate(flags: Map<string, string>): Promise<number> {

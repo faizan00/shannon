@@ -11,6 +11,7 @@ import type { ReasoningProvider } from '../reasoning/provider.js';
 import type { ReasoningRouter } from '../reasoning/router.js';
 import type { SpawnFn } from '../shannon/execution-adapter.js';
 import { checkpointFilePath } from '../state/checkpoint.js';
+import { engagementFilePath } from '../state/engagement-store.js';
 import { buildDefaultToolRegistry } from '../tools/default-registry.js';
 import type { ActionProposal } from '../types.js';
 import { crossSourceCorrelatedNodes, findNode } from '../worldmodel/graph.js';
@@ -223,6 +224,40 @@ test('a corrupted checkpoint recovers instead of failing the whole hunt — dura
     // The corrupted file itself is preserved for forensics, never silently deleted.
     const quarantinedFiles = await readdir(dirname(path));
     assert.ok(quarantinedFiles.some((f) => f.startsWith('checkpoint.json.corrupted-')));
+  });
+});
+
+test('a corrupted engagement state.json is quarantined and logged, never silently overwritten', async () => {
+  await withTempWorkspace(async (workspaceDir) => {
+    const firstInput = await buildBundledSimulationInput({
+      engagementId: 'sim-corrupt-engagement',
+      workspaceDir,
+      maxRounds: 1,
+    });
+    const first = await runAdaptiveHunt(firstInput);
+    assert.equal(first.ok, true);
+    if (!first.ok) return;
+
+    // Simulate real-world corruption (a truncated write, a crash mid-save).
+    const path = engagementFilePath(workspaceDir, 'sim-corrupt-engagement');
+    await writeFile(path, '{ this is not valid json', 'utf8');
+
+    const secondInput = await buildBundledSimulationInput({
+      engagementId: 'sim-corrupt-engagement',
+      workspaceDir,
+      maxRounds: 1,
+    });
+    const second = await runAdaptiveHunt(secondInput);
+
+    assert.equal(second.ok, true, 'a corrupted engagement state must not fail the entire hunt');
+    if (!second.ok) return;
+    assert.ok(
+      second.value.log.some((line) => line.includes('engagement state recovery:') && line.includes('quarantined')),
+    );
+
+    // The corrupted file itself is preserved for forensics, never silently deleted.
+    const quarantinedFiles = await readdir(dirname(path));
+    assert.ok(quarantinedFiles.some((f) => f.startsWith('state.json.corrupted-')));
   });
 });
 

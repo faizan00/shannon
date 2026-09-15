@@ -197,7 +197,13 @@ function statusAfterUpdate(contradictingCount: number, confidence: number): Hypo
   if (contradictingCount > 0 && confidence < 0.2) {
     return 'contradicted';
   }
-  if (confidence >= 0.8) {
+  // A hypothesis with any standing, unresolved contradicting observation
+  // can never reach "supported" -- not even after later supportive
+  // observations push confidence back up. Belief is not evidence: a real
+  // contradiction must be reconciled (contradictingObservationIds is never
+  // cleared once set), not simply outweighed by more recent confidence
+  // math.
+  if (contradictingCount === 0 && confidence >= 0.8) {
     return 'supported';
   }
   return 'investigating';

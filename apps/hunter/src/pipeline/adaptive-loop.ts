@@ -79,7 +79,12 @@ import {
   quarantineCorruptedCheckpoint,
   saveCheckpoint,
 } from '../state/checkpoint.js';
-import { loadEngagement, newEngagement, saveEngagement } from '../state/engagement-store.js';
+import {
+  loadEngagement,
+  newEngagement,
+  quarantineCorruptedEngagementState,
+  saveEngagement,
+} from '../state/engagement-store.js';
 import { appendObservations, listObservations } from '../state/observation-log.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import {
@@ -342,6 +347,17 @@ export async function runAdaptiveHunt(input: AdaptiveHuntInput): Promise<Result<
   if (existingEngagement.ok) {
     engagement = existingEngagement.value;
   } else {
+    // A corrupted state.json must never be silently overwritten -- quarantine
+    // it first (never delete, stays available for forensics) and log the
+    // recovery loudly, exactly like the checkpoint recovery path just below.
+    // 'not-found' (a genuinely fresh engagement) needs no quarantine at all.
+    if (existingEngagement.error.kind === 'corrupted') {
+      const quarantineResult = await quarantineCorruptedEngagementState(input.workspaceDir, input.engagementId);
+      if (!quarantineResult.ok) return err(quarantineResult.error);
+      log.push(
+        `engagement state recovery: ${existingEngagement.error.message}; quarantined to "${quarantineResult.value ?? '(nothing to quarantine)'}" and starting a fresh engagement record rather than failing the hunt`,
+      );
+    }
     engagement = newEngagement({
       id: input.engagementId,
       programId: program.programId,
@@ -393,7 +409,22 @@ export async function runAdaptiveHunt(input: AdaptiveHuntInput): Promise<Result<
     log.push(`memory: loaded ${memory.length} prior experience entry/ies to bias hypothesis prioritization`);
   }
 
-  if (recoveringFromCorruptedCheckpoint && allObservations.length > 0) {
+  // A save between saveWorldModel and saveCheckpoint at the end of bootstrap
+  // (below) is two separate, sequential writes -- a process killed between
+  // them leaves a resume with real, durably-recorded observations but zero
+  // checkpoint hypotheses: the exact same recoverable shape as a corrupted
+  // checkpoint, just detected by "observations exist, hypotheses don't"
+  // instead of the checkpoint load having thrown. `checkpoint.round === 0`
+  // distinguishes this from a legitimate mid-hunt state where every
+  // hypothesis was genuinely resolved down to zero -- that can only happen
+  // after the round loop has actually run at least once.
+  const bootstrapSaveWasInterrupted =
+    !recoveringFromCorruptedCheckpoint &&
+    checkpoint.round === 0 &&
+    checkpoint.hypotheses.length === 0 &&
+    allObservations.length > 0;
+
+  if ((recoveringFromCorruptedCheckpoint || bootstrapSaveWasInterrupted) && allObservations.length > 0) {
     const rebuiltHypotheses = hypothesesFromObservations(allObservations, engagement.id, memory);
     checkpoint = {
       ...checkpoint,
@@ -401,11 +432,13 @@ export async function runAdaptiveHunt(input: AdaptiveHuntInput): Promise<Result<
       observationIds: allObservations.map((o) => o.id),
     };
     log.push(
-      `checkpoint recovery: rebuilt ${rebuiltHypotheses.length} hypothesis/es from ${allObservations.length} durable observation(s); round/action/decision history could not be recovered and restarts at 0`,
+      recoveringFromCorruptedCheckpoint
+        ? `checkpoint recovery: rebuilt ${rebuiltHypotheses.length} hypothesis/es from ${allObservations.length} durable observation(s); round/action/decision history could not be recovered and restarts at 0`
+        : `bootstrap recovery: found ${allObservations.length} durable observation(s) but no saved hypotheses (an interrupted save between the world model and checkpoint writes) — rebuilt ${rebuiltHypotheses.length} hypothesis/es rather than silently reporting a hunt with no findings`,
     );
   }
 
-  const isFreshHunt = worldModel.nodes.length === 0 && checkpoint.hypotheses.length === 0;
+  const isFreshHunt = allObservations.length === 0 && checkpoint.hypotheses.length === 0;
   let jsProvenanceEdges: readonly ProvenanceEdge[] = [];
 
   if (isFreshHunt) {
@@ -920,7 +953,13 @@ export async function runAdaptiveHunt(input: AdaptiveHuntInput): Promise<Result<
         log.push(`evidence: recorded ${evidenceEntries.length} evidence entry/entries`);
 
         // === DEDUPLICATE ===
-        const priorFindings = await listFindings(input.workspaceDir, engagement.id);
+        const priorFindingsResult = await listFindings(input.workspaceDir, engagement.id);
+        if (priorFindingsResult.corruptedFindingIds.length > 0 || priorFindingsResult.listError) {
+          log.push(
+            `dedup: ${priorFindingsResult.corruptedFindingIds.length} prior finding file(s) could not be loaded (${priorFindingsResult.corruptedFindingIds.join(', ') || priorFindingsResult.listError}) — excluded from the duplicate check rather than silently vanishing`,
+          );
+        }
+        const priorFindings = priorFindingsResult.findings;
         const dedup = new LocalSignatureDeduplicator();
         const dedupResult = dedup.checkDuplicate(finding, priorFindings);
         if (dedupResult.isDuplicate) {
@@ -980,11 +1019,16 @@ export async function runAdaptiveHunt(input: AdaptiveHuntInput): Promise<Result<
     log.push('validate: no hypothesis reached "supported" status within the round budget; no finding was created');
   }
 
-  const allFindings = await listFindings(input.workspaceDir, engagement.id);
+  const allFindingsResult = await listFindings(input.workspaceDir, engagement.id);
+  if (allFindingsResult.corruptedFindingIds.length > 0 || allFindingsResult.listError) {
+    log.push(
+      `metrics: ${allFindingsResult.corruptedFindingIds.length} finding file(s) could not be loaded (${allFindingsResult.corruptedFindingIds.join(', ') || allFindingsResult.listError}) — excluded from recon metrics rather than silently vanishing`,
+    );
+  }
   const metrics = computeReconMetrics({
     worldModel,
     hypotheses: checkpoint.hypotheses,
-    findings: allFindings,
+    findings: allFindingsResult.findings,
     huntStartedAt: checkpoint.startedAt,
   });
 

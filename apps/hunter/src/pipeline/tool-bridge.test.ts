@@ -344,6 +344,28 @@ test('executeActionViaRegistry reports BLOCKED_BY_SCOPE for an out-of-scope targ
   assert.equal(called, false);
 });
 
+test('executeActionViaRegistry reports BLOCKED_BY_SCOPE for a target of unknown scope (matches neither an in-scope nor out-of-scope rule), without ever calling the adapter -- fail-closed, not implicitly allowed', async () => {
+  const registry = new ToolRegistry();
+  let called = false;
+  registry.register(
+    new (class extends FakeAdapter {
+      override run(): Promise<ToolRunResult> {
+        called = true;
+        return super.run();
+      }
+    })(),
+  );
+  const result = await executeActionViaRegistry(
+    action({ kind: 'passive-recon', targetRef: 'https://totally-unlisted.example.net' }),
+    program(),
+    BUDGET,
+    { registry, engagementId: 'e1' },
+  );
+  assert.equal(result.status, 'BLOCKED_BY_SCOPE');
+  assert.equal(result.scopeDecision, 'unknown');
+  assert.equal(called, false);
+});
+
 test('executeActionViaRegistry reports BLOCKED_BY_POLICY when authorization is not confirmed', async () => {
   const registry = new ToolRegistry();
   registry.register(new FakeAdapter());

@@ -118,23 +118,41 @@ export async function loadFinding(
   }
 }
 
-export async function listFindings(workspaceDir: string, engagementId: string): Promise<readonly Finding[]> {
+export interface ListFindingsResult {
+  readonly findings: readonly Finding[];
+  /** Ids of finding files that existed but failed to load (corrupted JSON, a read error) — surfaced rather than silently dropped, even though they can't be included in `findings`. A confirmed, security-relevant record must never just vanish without a signal. */
+  readonly corruptedFindingIds: readonly string[];
+  /** Set only when the findings directory itself could not be listed for a reason other than "it doesn't exist yet" (e.g. a permissions error) — distinct from the genuinely-empty (ENOENT) case, which is not an error. */
+  readonly listError: string | undefined;
+}
+
+export async function listFindings(workspaceDir: string, engagementId: string): Promise<ListFindingsResult> {
   const dir = join(workspaceDir, 'engagements', engagementId, 'findings');
   const { readdir } = await import('node:fs/promises');
   let entries: string[];
   try {
     entries = await readdir(dir);
-  } catch {
-    return [];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { findings: [], corruptedFindingIds: [], listError: undefined };
+    }
+    return {
+      findings: [],
+      corruptedFindingIds: [],
+      listError: `could not list findings in "${dir}": ${(error as Error).message}`,
+    };
   }
   const findings: Finding[] = [];
+  const corruptedFindingIds: string[] = [];
   for (const entry of entries) {
     if (!entry.endsWith('.json')) continue;
     const findingId = entry.slice(0, -'.json'.length);
     const loaded = await loadFinding(workspaceDir, engagementId, findingId);
     if (loaded.ok) {
       findings.push(loaded.value);
+    } else {
+      corruptedFindingIds.push(findingId);
     }
   }
-  return findings;
+  return { findings, corruptedFindingIds, listError: undefined };
 }

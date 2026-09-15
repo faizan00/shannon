@@ -5,9 +5,27 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { appendMemory, recordMemory } from '../memory/hunt-memory.js';
 import { analyzeJavaScript } from '../recon/js-intel.js';
-import type { ProgramScope } from '../types.js';
+import type { Observation, ProgramScope } from '../types.js';
 import { addEdge, emptyWorldModel, upsertNode } from '../worldmodel/graph.js';
-import { runResearchTrack } from './research-track.js';
+import { runResearchTrack, satisfiedRequirementsFor } from './research-track.js';
+
+function observation(overrides: Partial<Observation> = {}): Observation {
+  return {
+    id: 'obs-1',
+    engagementId: 'e1',
+    source: 'behavioral-diff',
+    assetRef: 'https://app.example.com',
+    vulnClass: 'authz',
+    title: 'x',
+    description: 'x',
+    severityHint: 'medium',
+    confidenceHint: 'medium',
+    verified: false,
+    tags: [],
+    collectedAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
 
 function program(): ProgramScope {
   return {
@@ -257,4 +275,35 @@ test('runResearchTrack persists the provenance graph and state graph so a second
     });
     assert.equal(second.provenanceEdges.length, first.provenanceEdges.length);
   });
+});
+
+// === satisfiedRequirementsFor: closes the "any support credits every requirement" rubber stamp ===
+
+test('satisfiedRequirementsFor credits nothing when there is no supporting observation at all', () => {
+  const result = satisfiedRequirementsFor(['requirement A', 'requirement B'], []);
+  assert.deepEqual(result, new Set());
+});
+
+test('satisfiedRequirementsFor credits nothing from a single unverified observation, even though it previously would have credited every requirement', () => {
+  const result = satisfiedRequirementsFor(
+    ['requirement A', 'requirement B'],
+    [observation({ id: 'obs-1', verified: false })],
+  );
+  assert.deepEqual(result, new Set());
+});
+
+test('satisfiedRequirementsFor credits nothing when verified observations exist but fewer than the number of distinct requirements', () => {
+  const result = satisfiedRequirementsFor(
+    ['requirement A', 'requirement B'],
+    [observation({ id: 'obs-1', verified: true })],
+  );
+  assert.deepEqual(result, new Set(), 'one verified observation must never credit two distinct requirements');
+});
+
+test('satisfiedRequirementsFor credits every requirement once there are at least as many verified observations as requirements', () => {
+  const result = satisfiedRequirementsFor(
+    ['requirement A', 'requirement B'],
+    [observation({ id: 'obs-1', verified: true }), observation({ id: 'obs-2', verified: true })],
+  );
+  assert.deepEqual(result, new Set(['requirement A', 'requirement B']));
 });

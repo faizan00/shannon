@@ -67,6 +67,20 @@ test('flags a candidate DOM XSS only when both an untrusted source and a dangero
   );
 });
 
+test('the DOM XSS provenance edge carries the real observation id it was derived from, not an empty evidence trail', () => {
+  const result = analyzeJavaScript(
+    'const q = new URLSearchParams(location.search).get("q"); resultsDiv.innerHTML = q;',
+    'bundle-search.js',
+    'https://app.example.com/search',
+    'e1',
+  );
+  const xssObservation = result.observations.find((o) => o.vulnClass === 'xss');
+  const domSinkEdge = result.provenanceEdges.find((e) => e.sinkKind === 'dom-sink');
+  assert.ok(xssObservation);
+  assert.ok(domSinkEdge);
+  assert.equal(domSinkEdge?.sourceObservationId, xssObservation?.id);
+});
+
 test('a bundle with no interesting content yields no false-positive observations', () => {
   const result = analyzeJavaScript('const x = 1 + 1;', 'trivial.js', 'https://app.example.com', 'e1');
   assert.equal(result.observations.length, 0);

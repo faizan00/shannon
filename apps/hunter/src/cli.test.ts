@@ -262,6 +262,51 @@ test('hunt --simulate --h1-brain-snapshot fails clearly when no program in the s
   }
 });
 
+test('hunt --simulate --h1-brain-snapshot fails clearly on a disclosed report record missing a required field, rather than a confusing low-level error later', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hunter-cli-h1brain-malformed-'));
+  try {
+    const snapshotPath = join(dir, 'h1-brain-snapshot.json');
+    await writeFile(
+      snapshotPath,
+      JSON.stringify({
+        programs: [
+          {
+            handle: 'example-corp',
+            name: 'Example Corp',
+            snapshot_at: '2026-01-01T00:00:00.000Z',
+            disclosed_reports: [
+              {
+                id: 1,
+                title: 'Reflected XSS in search',
+                program: 'example-corp',
+                weakness: 'Cross-site Scripting (XSS) - Reflected',
+                // "writeup" is deliberately missing.
+              },
+            ],
+          },
+        ],
+      }),
+      'utf8',
+    );
+    const result = await run([
+      'hunt',
+      '--simulate',
+      '--workspace-dir',
+      dir,
+      '--engagement-id',
+      'h1brain-malformed',
+      '--h1-brain-snapshot',
+      snapshotPath,
+      '--h1-brain-program',
+      'example-corp',
+    ]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /disclosed report \(id 1\) missing a non-empty "writeup"/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('hunt --simulate --h1-brain-snapshot without --h1-brain-program fails clearly rather than guessing a program', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'hunter-cli-h1brain-noprogram-'));
   try {
