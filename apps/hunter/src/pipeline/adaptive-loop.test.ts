@@ -349,6 +349,7 @@ test('a hallucinated action proposal is rejected by the policy gate and the loop
     const input = await buildBundledSimulationInput({ engagementId: 'sim-hallucination', workspaceDir, maxRounds: 6 });
     const router: ReasoningRouter = {
       primary: new HallucinatingReasoningProvider(),
+      premium: new HallucinatingReasoningProvider(),
       fallback: new HeuristicReasoningProvider(),
       configuredSource: 'claude',
     };
