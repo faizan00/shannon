@@ -66,6 +66,8 @@ const NEXT_INVESTIGATION_BY_VULN_CLASS: Readonly<Record<string, string>> = {
   'js-intel-secret-exposure': 'manual review of the referenced source location; do not use any discovered credential',
   'js-intel-endpoint-discovery':
     'JS/source-map collection against the referencing page, to see whether the newly discovered endpoint ships its own bundle worth analyzing',
+  'known-vulnerable-dependency':
+    'confirm the version fingerprint directly against the live target, then attempt to trigger the specific behavior the advisory describes; escalate to a source-aware Shannon scan of the affected component if source is available',
 };
 
 function suggestNextInvestigation(vulnClass: string): string {
@@ -79,6 +81,11 @@ const REQUIRED_EVIDENCE_BY_VULN_CLASS: Readonly<Record<string, readonly string[]
   xss: ['proof the payload executes in a real browser context', 'confirmation of the injection sink'],
   authz: ['a second account/role confirming the access difference', 'a captured request/response pair'],
   idor: ['a second account/role confirming the access difference', 'a captured request/response pair'],
+  'known-vulnerable-dependency': [
+    'a confirmed version fingerprint from the live target, not just the bundle/banner match',
+    'the advisory ID and its fixed-version boundary',
+    'demonstrated triggering of the specific vulnerable behavior -- a version match alone is never sufficient',
+  ],
 };
 
 function requiredEvidenceFor(vulnClass: string): readonly string[] {

@@ -94,7 +94,8 @@ export type ObservationSource =
   | 'passive-recon'
   | 'active-recon'
   | 'js-intelligence'
-  | 'behavioral-diff';
+  | 'behavioral-diff'
+  | 'dependency-intelligence';
 
 export interface Observation {
   readonly id: string;

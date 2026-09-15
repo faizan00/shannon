@@ -59,7 +59,9 @@ import {
 import { compareAuthStates, type StateResponseMap } from '../recon/behavioral.js';
 import type { AuthStateHeaders } from '../recon/behavioral-live.js';
 import { correlateDiscoveries, crossSourceCorrelated } from '../recon/correlate.js';
+import { extractDependencyFingerprints } from '../recon/dependency-fingerprint.js';
 import { analyzeJavaScript } from '../recon/js-intel.js';
+import { advisoryMatchToObservation, correlateAdvisories } from '../recon/nday-advisory.js';
 import {
   classifyDiscoveryScope,
   classifyRawDiscoveryScope,
@@ -515,6 +517,32 @@ export async function runAdaptiveHunt(input: AdaptiveHuntInput): Promise<Result<
       `understand (js-intelligence): analyzed ${input.jsArtifacts.length} artifact(s), ${jsObservations.length} observation(s)`,
     );
 
+    // === UNDERSTAND (N-day / patch-window dependency correlation) ===
+    // Fingerprinting itself is pure/local (same already-fetched content the
+    // JS-intelligence pass above just analyzed) and always runs; only the
+    // OSV.dev advisory lookup is a real outbound network call, so only that
+    // part is gated behind `liveRecon`, exactly like every other genuine
+    // network/process call this loop makes.
+    const ndayObservations: Observation[] = [];
+    const dependencyFingerprints = input.jsArtifacts
+      .filter((artifact) => classifyDiscoveryScope(program, 'asset', artifact.assetRef) !== 'out-of-scope')
+      .flatMap((artifact) => extractDependencyFingerprints(artifact.content, artifact.assetRef));
+    if (input.liveRecon && dependencyFingerprints.length > 0) {
+      const advisoryResult = await correlateAdvisories(dependencyFingerprints, input.workspaceDir);
+      if (advisoryResult.ok) {
+        ndayObservations.push(...advisoryResult.value.map((match) => advisoryMatchToObservation(match, engagement.id)));
+      }
+      log.push(
+        advisoryResult.ok
+          ? `understand (n-day advisory): checked ${dependencyFingerprints.length} fingerprinted dependenc(ies), ${advisoryResult.value.length} advisory match(es)`
+          : `understand (n-day advisory): OSV lookup failed, skipped: ${advisoryResult.error}`,
+      );
+    } else if (dependencyFingerprints.length > 0) {
+      log.push(
+        `understand (n-day advisory): ${dependencyFingerprints.length} dependenc(ies) fingerprinted, OSV lookup skipped (liveRecon not enabled)`,
+      );
+    }
+
     // === OBSERVE (behavioral state-diffing) ===
     const behavioralObservations: Observation[] = [];
     for (const fixture of input.behavioralFixtures) {
@@ -527,7 +555,11 @@ export async function runAdaptiveHunt(input: AdaptiveHuntInput): Promise<Result<
       `observe (behavioral): compared ${input.behavioralFixtures.length} endpoint/auth-state matrix/es, ${behavioralObservations.length} observation(s)`,
     );
 
-    const bootstrapObservations = filterInScopeObservations(program, [...jsObservations, ...behavioralObservations]);
+    const bootstrapObservations = filterInScopeObservations(program, [
+      ...jsObservations,
+      ...behavioralObservations,
+      ...ndayObservations,
+    ]);
     await appendObservations(input.workspaceDir, engagement.id, bootstrapObservations);
     allObservations = [...allObservations, ...bootstrapObservations];
 
