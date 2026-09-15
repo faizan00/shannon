@@ -163,6 +163,33 @@ test('a --model option is forwarded as --model <alias>', async () => {
   assert.equal(capturedArgs?.[modelIndex + 1], 'sonnet');
 });
 
+test('an --effort option is forwarded as --effort <level>', async () => {
+  let capturedArgs: readonly string[] | undefined;
+  const provider = new ClaudeCodeReasoningProvider({
+    effort: 'max',
+    spawnCaptureImpl: async (_binary, args) => {
+      capturedArgs = args;
+      return fakeCapture({ is_error: false, structured_output: { hypotheses: [] } });
+    },
+  });
+  await provider.generateHypotheses([OBSERVATION], 'e1');
+  const effortIndex = capturedArgs?.indexOf('--effort') ?? -1;
+  assert.ok(effortIndex >= 0);
+  assert.equal(capturedArgs?.[effortIndex + 1], 'max');
+});
+
+test('--effort is omitted entirely when not set, leaving the cheap tier unaffected', async () => {
+  let capturedArgs: readonly string[] | undefined;
+  const provider = new ClaudeCodeReasoningProvider({
+    spawnCaptureImpl: async (_binary, args) => {
+      capturedArgs = args;
+      return fakeCapture({ is_error: false, structured_output: { hypotheses: [] } });
+    },
+  });
+  await provider.generateHypotheses([OBSERVATION], 'e1');
+  assert.ok(!capturedArgs?.includes('--effort'));
+});
+
 test('selectNextBestAction throws when the process exits non-zero, rather than fabricating a proposal', async () => {
   const provider = new ClaudeCodeReasoningProvider({
     spawnCaptureImpl: async () => ({ stdout: '', stderr: 'not logged in', exitCode: 1, timedOut: false }),

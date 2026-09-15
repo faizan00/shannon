@@ -255,3 +255,53 @@ test('findRelevantReports silently drops a match referencing an unknown asset re
   const provider = new ClaudeReasoningProvider({ apiKey: 'fake', fetchImpl: fakeFetch });
   assert.deepEqual(await provider.findRelevantReports([OBSERVATION], [DISCLOSED_REPORT]), []);
 });
+
+// === Extended-thinking-scaled reasoning (effort) ===
+
+test('setting effort adds adaptive thinking and output_config.effort to the request body, and raises max_tokens', async () => {
+  let capturedBody: Record<string, unknown> | undefined;
+  const fakeFetch = (async (_url: string, init?: RequestInit) => {
+    capturedBody = JSON.parse(init?.body as string);
+    return fakeAnthropicResponse('select_next_best_action', {
+      kind: 'shannon',
+      targetRef: 'https://app.example.com/search',
+      hypothesisId: 'hyp-1',
+      whyThisAction: 'x',
+      hypothesisTested: 'x',
+      uncertaintyReduced: 'x',
+      confirmingObservation: 'x',
+      contradictingObservation: 'x',
+      nextStepIfConfirmed: 'x',
+      nextStepIfContradicted: 'x',
+    });
+  }) as typeof fetch;
+  const provider = new ClaudeReasoningProvider({ apiKey: 'fake', effort: 'max', fetchImpl: fakeFetch });
+  await provider.selectNextBestAction(snapshotWithOneCandidate());
+  assert.deepEqual(capturedBody?.thinking, { type: 'adaptive' });
+  assert.deepEqual(capturedBody?.output_config, { effort: 'max' });
+  assert.equal(capturedBody?.max_tokens, 16_000);
+});
+
+test('leaving effort unset omits thinking and output_config entirely, leaving the cheap tier unaffected', async () => {
+  let capturedBody: Record<string, unknown> | undefined;
+  const fakeFetch = (async (_url: string, init?: RequestInit) => {
+    capturedBody = JSON.parse(init?.body as string);
+    return fakeAnthropicResponse('select_next_best_action', {
+      kind: 'shannon',
+      targetRef: 'https://app.example.com/search',
+      hypothesisId: 'hyp-1',
+      whyThisAction: 'x',
+      hypothesisTested: 'x',
+      uncertaintyReduced: 'x',
+      confirmingObservation: 'x',
+      contradictingObservation: 'x',
+      nextStepIfConfirmed: 'x',
+      nextStepIfContradicted: 'x',
+    });
+  }) as typeof fetch;
+  const provider = new ClaudeReasoningProvider({ apiKey: 'fake', fetchImpl: fakeFetch });
+  await provider.selectNextBestAction(snapshotWithOneCandidate());
+  assert.equal(capturedBody?.thinking, undefined);
+  assert.equal(capturedBody?.output_config, undefined);
+  assert.equal(capturedBody?.max_tokens, 1536);
+});

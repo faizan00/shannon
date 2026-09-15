@@ -141,12 +141,25 @@ export const RELEVANT_REPORTS_TOOL = {
   },
 } as const;
 
+/**
+ * The real Anthropic `output_config.effort` vocabulary -- not artificially
+ * narrowed to what `reasoning/router.ts` happens to construct today
+ * (`'high'`/`'max'`), since a caller may reasonably want the full range.
+ * Setting `effort` also switches on adaptive thinking (`thinking: {type:
+ * 'adaptive'}`) -- there is no way to request effort without thinking on
+ * the models this package targets (Sonnet-family). Never set for the
+ * cheap tier's Haiku-family model, which does not support `effort` at all
+ * -- see this file's module docstring and `reasoning/router.ts`.
+ */
+export type ThinkingEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 export interface ClaudeReasoningProviderOptions {
   readonly apiKey: string;
   readonly model?: string;
   readonly baseUrl?: string;
   readonly fetchImpl?: typeof fetch;
   readonly timeoutMs?: number;
+  readonly effort?: ThinkingEffort;
 }
 
 interface AnthropicToolUseBlock {
@@ -179,12 +192,25 @@ export class ClaudeReasoningProvider implements ReasoningProvider {
       },
       body: JSON.stringify({
         model: this.options.model ?? 'claude-sonnet-4-6',
-        max_tokens: 1536,
+        // Thinking output counts against max_tokens -- 1536 is enough for
+        // this package's small structured-JSON replies alone, but real
+        // extended thinking needs real headroom (the ~16000 non-streaming
+        // default this package's own claude-api guidance recommends),
+        // never a factor in the cheap tier's unchanged request shape.
+        max_tokens: this.options.effort !== undefined ? 16_000 : 1536,
         tools: [tool],
         tool_choice: { type: 'tool', name: toolName },
+        ...(this.options.effort !== undefined
+          ? { thinking: { type: 'adaptive' }, output_config: { effort: this.options.effort } }
+          : {}),
         messages: [{ role: 'user', content: prompt }],
       }),
-      signal: AbortSignal.timeout(this.options.timeoutMs ?? 30_000),
+      // Real extended thinking takes meaningfully longer than a plain tool
+      // call -- 30s risks routinely timing out a critical-tier round and
+      // silently degrading to the heuristic fallback (reasoning/router.ts),
+      // never a factor when effort is unset (the cheap tier's timeout is
+      // unchanged).
+      signal: AbortSignal.timeout(this.options.timeoutMs ?? (this.options.effort !== undefined ? 90_000 : 30_000)),
     });
 
     if (!response.ok) {

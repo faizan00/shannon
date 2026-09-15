@@ -353,6 +353,7 @@ test('a hallucinated action proposal is rejected by the policy gate and the loop
     const router: ReasoningRouter = {
       primary: new HallucinatingReasoningProvider(),
       premium: new HallucinatingReasoningProvider(),
+      critical: new HallucinatingReasoningProvider(),
       fallback: new HeuristicReasoningProvider(),
       configuredSource: 'claude',
     };

@@ -60,7 +60,7 @@ class FailingReportProvider implements ReasoningProvider {
 
 function routerWith(primary: ReasoningProvider): ReasoningRouter {
   const heuristic = new HeuristicReasoningProvider();
-  return { primary, premium: primary, fallback: heuristic, configuredSource: 'claude' };
+  return { primary, premium: primary, critical: primary, fallback: heuristic, configuredSource: 'claude' };
 }
 
 test('findRelevantDisclosedReports returns ok([]) without calling the provider when there are no disclosed reports', async () => {

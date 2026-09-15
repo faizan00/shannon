@@ -69,12 +69,26 @@ test('a snapshot with only cheap-kind candidates backed by medium-impact hypothe
   assert.equal(chooseModelTier(s), 'cheap');
 });
 
-test('a candidate action of kind "shannon" is premium, regardless of hypothesis impact', () => {
+test('a candidate action of kind "shannon" is critical, regardless of hypothesis impact', () => {
   const s = snapshot({
     candidateActions: [action({ kind: 'shannon' })],
     hypotheses: [hypothesis({ potentialImpact: 'low' })],
   });
-  assert.equal(chooseModelTier(s), 'premium');
+  assert.equal(chooseModelTier(s), 'critical');
+});
+
+test('a shannon-kind candidate outranks an unrelated high-impact hypothesis -- critical, not premium', () => {
+  const s = snapshot({
+    candidateActions: [
+      action({ kind: 'shannon', hypothesisId: 'hyp-1' }),
+      action({ kind: 'active-recon', hypothesisId: 'hyp-2' }),
+    ],
+    hypotheses: [
+      hypothesis({ id: 'hyp-1', potentialImpact: 'low' }),
+      hypothesis({ id: 'hyp-2', potentialImpact: 'high' }),
+    ],
+  });
+  assert.equal(chooseModelTier(s), 'critical');
 });
 
 test('a candidate backed by a high-impact hypothesis is premium', () => {
