@@ -49,16 +49,26 @@
  * Claude subscription's usage on every Hunter round.
  */
 
+import type { H1BrainDisclosedReportRecord } from '../discovery/h1-brain-provider.js';
 import { spawnCapture } from '../recon/cli-adapters.js';
-import type { ActionProposal, HypothesisProposal, Observation, WorldModelSnapshot } from '../types.js';
+import type {
+  ActionProposal,
+  HypothesisProposal,
+  Observation,
+  RelevantReportProposal,
+  WorldModelSnapshot,
+} from '../types.js';
 import {
   ACTION_PROPOSAL_TOOL,
   buildActionSelectionPrompt,
   buildHypothesisPrompt,
+  buildRelevantReportsPrompt,
   HYPOTHESIS_PROPOSAL_TOOL,
+  RELEVANT_REPORTS_TOOL,
+  type ThinkingEffort,
 } from './claude-provider.js';
 import type { ReasoningProvider } from './provider.js';
-import { validateActionProposal, validateHypothesisProposal } from './schema.js';
+import { validateActionProposal, validateHypothesisProposal, validateRelevantReportProposal } from './schema.js';
 
 export interface ClaudeCodeReasoningProviderOptions {
   /** Model alias/name forwarded to `claude --model`. Defaults to the CLI's own default model. */
@@ -68,6 +78,16 @@ export interface ClaudeCodeReasoningProviderOptions {
   readonly timeoutMs?: number;
   /** Injectable for tests — defaults to the real `recon/cli-adapters.ts:spawnCapture`. */
   readonly spawnCaptureImpl?: typeof spawnCapture;
+  /**
+   * Forwarded as `claude --effort <level>` — verified live against the
+   * real installed CLI (v2.1.266) together with this exact invocation
+   * shape (`-p ... --json-schema ... --tools ""`): a real call with
+   * `--effort high` genuinely spent real thinking tokens and still
+   * produced a valid `structured_output`. Unlike the direct-API provider,
+   * the CLI abstracts away each model's own underlying thinking mechanism
+   * — this option needs no model-family special-casing.
+   */
+  readonly effort?: ThinkingEffort;
 }
 
 interface ClaudeCodeResultEnvelope {
@@ -103,10 +123,16 @@ export class ClaudeCodeReasoningProvider implements ReasoningProvider {
       '--json-schema',
       JSON.stringify(jsonSchema),
       ...(this.options.model !== undefined ? ['--model', this.options.model] : []),
+      ...(this.options.effort !== undefined ? ['--effort', this.options.effort] : []),
     ];
-    const result = await capture(binary, args, this.options.timeoutMs ?? 60_000);
+    // Real extended thinking (a critical-tier round, --effort max) takes
+    // meaningfully longer than a plain tool call -- 60s risks routinely
+    // timing out and silently degrading to the heuristic fallback
+    // (reasoning/router.ts). Never a factor when effort is unset.
+    const timeoutMs = this.options.timeoutMs ?? (this.options.effort !== undefined ? 180_000 : 60_000);
+    const result = await capture(binary, args, timeoutMs);
     if (result.timedOut) {
-      throw new Error(`claude CLI timed out after ${this.options.timeoutMs ?? 60_000}ms`);
+      throw new Error(`claude CLI timed out after ${timeoutMs}ms`);
     }
     if (result.exitCode !== 0) {
       throw new Error(`claude CLI exited ${result.exitCode}: ${(result.stderr || result.stdout).slice(0, 500)}`);
@@ -155,6 +181,34 @@ export class ClaudeCodeReasoningProvider implements ReasoningProvider {
       const validated = validateHypothesisProposal(raw);
       if (!validated.ok) {
         throw new Error(`Claude Code's hypothesis proposal failed schema validation: ${validated.error}`);
+      }
+      proposals.push(validated.value);
+    }
+    return proposals;
+  }
+
+  async findRelevantReports(
+    observations: readonly Observation[],
+    disclosedReports: readonly H1BrainDisclosedReportRecord[],
+  ): Promise<readonly RelevantReportProposal[]> {
+    if (disclosedReports.length === 0) {
+      return [];
+    }
+    const prompt = buildRelevantReportsPrompt(observations, disclosedReports);
+    const output = await this.invoke(prompt, RELEVANT_REPORTS_TOOL.input_schema);
+    if (typeof output !== 'object' || output === null || !Array.isArray((output as Record<string, unknown>).matches)) {
+      throw new Error('Claude Code\'s relevant-reports proposal did not include a "matches" array');
+    }
+    const validKnownIds = new Set(disclosedReports.map((r) => r.id));
+    const validAssetRefs = new Set(observations.map((o) => o.assetRef));
+    const proposals: RelevantReportProposal[] = [];
+    for (const raw of (output as { matches: readonly unknown[] }).matches) {
+      const validated = validateRelevantReportProposal(raw);
+      if (!validated.ok) {
+        throw new Error(`Claude Code's relevant-reports proposal failed schema validation: ${validated.error}`);
+      }
+      if (!validKnownIds.has(validated.value.reportId) || !validAssetRefs.has(validated.value.relatedAssetRef)) {
+        continue;
       }
       proposals.push(validated.value);
     }

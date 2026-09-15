@@ -10,8 +10,8 @@
  * loses at most one in-flight action.
  */
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { readFile, rename } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   err,
   type HuntAction,
@@ -21,6 +21,7 @@ import {
   type ReasoningDecision,
   type Result,
 } from '../types.js';
+import { writeFileAtomic } from './atomic-write.js';
 
 export type HuntStatus = 'in-progress' | 'completed' | 'stopped';
 
@@ -65,8 +66,7 @@ export function checkpointFilePath(workspaceDir: string, engagementId: string): 
 
 export async function saveCheckpoint(workspaceDir: string, checkpoint: HuntCheckpoint): Promise<void> {
   const filePath = checkpointFilePath(workspaceDir, checkpoint.engagementId);
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, `${JSON.stringify(checkpoint, null, 2)}\n`, 'utf8');
+  await writeFileAtomic(filePath, `${JSON.stringify(checkpoint, null, 2)}\n`);
 }
 
 /** Returns a fresh checkpoint (not an error) when none exists yet — resuming a hunt that never started is just starting it. */

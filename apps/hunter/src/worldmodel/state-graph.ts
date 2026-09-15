@@ -16,8 +16,9 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { writeFileAtomic } from '../state/atomic-write.js';
 import { err, type Hypothesis, ok, type Result } from '../types.js';
 
 export type TransitionAuthorizationOutcome = 'allowed' | 'denied' | 'unknown';
@@ -83,8 +84,7 @@ export async function saveStateGraph(
   transitions: readonly WorkflowTransition[],
 ): Promise<void> {
   const filePath = stateGraphFilePath(workspaceDir, engagementId);
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, `${JSON.stringify(transitions, null, 2)}\n`, 'utf8');
+  await writeFileAtomic(filePath, `${JSON.stringify(transitions, null, 2)}\n`);
 }
 
 export async function loadStateGraph(

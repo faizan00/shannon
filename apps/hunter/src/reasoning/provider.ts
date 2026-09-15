@@ -19,9 +19,27 @@
  * decides which runs, and falls back to the heuristic provider if the
  * model-backed one errors or returns something that fails schema
  * validation.
+ *
+ * `findRelevantReports` is a third, genuinely-wired call type (unlike
+ * `generateHypotheses`, which no caller in the real pipeline actually
+ * invokes today — hypotheses are always derived deterministically instead,
+ * see `reasoning/hypothesis.ts`): `reasoning/disclosed-report-rag.ts` calls
+ * it once per hunt to judge which, if any, of an operator-supplied set of
+ * historical HackerOne disclosed reports are genuinely relevant to the
+ * current engagement's observations. `HeuristicReasoningProvider` always
+ * returns `[]` for it — an honest "no real semantic judgment available"
+ * rather than a fake keyword-matched guess.
  */
 
-import type { ActionProposal, HypothesisProposal, Observation, ReasoningSource, WorldModelSnapshot } from '../types.js';
+import type { H1BrainDisclosedReportRecord } from '../discovery/h1-brain-provider.js';
+import type {
+  ActionProposal,
+  HypothesisProposal,
+  Observation,
+  ReasoningSource,
+  RelevantReportProposal,
+  WorldModelSnapshot,
+} from '../types.js';
 
 export interface ReasoningProvider {
   readonly source: ReasoningSource;
@@ -32,4 +50,9 @@ export interface ReasoningProvider {
     observations: readonly Observation[],
     engagementId: string,
   ): Promise<readonly HypothesisProposal[]>;
+  /** Judges which candidate disclosed reports (if any) are genuinely relevant to the given observations. */
+  findRelevantReports(
+    observations: readonly Observation[],
+    disclosedReports: readonly H1BrainDisclosedReportRecord[],
+  ): Promise<readonly RelevantReportProposal[]>;
 }

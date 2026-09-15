@@ -181,6 +181,32 @@ const AUTH_STATE_PRIVILEGE_HIERARCHY: readonly string[] = [
 ];
 const SOURCE_DIVERSITY_FOR_INDEPENDENT_VALIDATION = 2;
 
+/**
+ * Which of `requiredEvidence`'s free-text items count as satisfied, for
+ * `validation/adversarial.ts:runAdversarialReview`'s `satisfiedRequirements`
+ * input. This module has no way to determine which *specific* requirement
+ * a given observation actually satisfies — the adversarial-review contract
+ * explicitly forbids guessing that from text — so crediting every item the
+ * moment *any* supporting observation exists, regardless of verification
+ * status, would be a rubber stamp: it lets a hypothesis "pass" on far
+ * weaker grounds than its own `requiredEvidence` list demands (e.g. two
+ * distinct items credited by one unverified observation). The closest
+ * honest, non-guessing proxy available: require at least as many
+ * independently *verified* supporting observations as there are distinct
+ * requirements — the same "verified, not merely asserted" bar
+ * `hasVerifiedSupport` already enforces, applied once per requirement
+ * instead of once total. Either every requirement is credited, or none are
+ * — this still never claims to know *which* requirement a given
+ * observation covers.
+ */
+export function satisfiedRequirementsFor(
+  requiredEvidence: readonly string[],
+  supportingObservations: readonly Observation[],
+): ReadonlySet<string> {
+  const verifiedSupportingObservationCount = supportingObservations.filter((o) => o.verified).length;
+  return new Set(verifiedSupportingObservationCount >= requiredEvidence.length ? requiredEvidence : []);
+}
+
 function fingerprintBody(text: string): string {
   try {
     return jsonStructureFingerprint(JSON.parse(text));
@@ -495,7 +521,7 @@ export async function runResearchTrack(input: ResearchTrackInput): Promise<Resea
       hypothesis: updated,
       supportingObservations,
       contradictingObservations: result.observations.filter((o) => updated.contradictingObservationIds.includes(o.id)),
-      satisfiedRequirements: new Set(supportingObservations.length > 0 ? updated.requiredEvidence : []),
+      satisfiedRequirements: satisfiedRequirementsFor(updated.requiredEvidence, supportingObservations),
     });
     log.push(`research-track adversarial-validation: "${updated.statement}" -> ${review.validationResult}`);
 

@@ -205,9 +205,22 @@ export async function executeActionViaRegistry(
   budget: HuntBudget,
   options: LiveReconOptions,
 ): Promise<LiveReconExecutionResult> {
+  // Fail-closed: live execution requires an *explicit* in-scope match, the
+  // same standard scope/validator.ts:validateTarget already holds a target
+  // to before any active execution begins. 'unknown' (matches neither an
+  // in-scope nor out-of-scope rule -- e.g. a third-party host referenced in
+  // a JS bundle, or a redirect target never listed in the program's own
+  // scope) must never be treated as implicitly allowed just because it
+  // wasn't explicitly denied -- discovery tracking a scope-unknown asset is
+  // intentionally permissive (see scope-tagging.ts's own docstring), but
+  // running real tools against it is not the same decision.
   const scopeDecision = classifyDiscoveryScope(program, 'asset', action.targetRef);
-  if (scopeDecision === 'out-of-scope') {
-    return blocked('BLOCKED_BY_SCOPE', `"${action.targetRef}" is out of scope; live execution refused`, scopeDecision);
+  if (scopeDecision !== 'in-scope') {
+    const reason =
+      scopeDecision === 'out-of-scope'
+        ? `"${action.targetRef}" is out of scope; live execution refused`
+        : `"${action.targetRef}" scope is unknown (matches neither an in-scope nor out-of-scope rule); live execution refused`;
+    return blocked('BLOCKED_BY_SCOPE', reason, scopeDecision);
   }
 
   if (!program.authorizationConfirmed) {

@@ -132,6 +132,39 @@ test('updateHypothesisWithObservation can flip a hypothesis to contradicted', ()
   assert.ok(updated.confidence < hypothesis.confidence);
 });
 
+test('a hypothesis with a standing contradiction can never reach "supported", even after enough later supportive observations push confidence back above the threshold', () => {
+  const [hypothesis] = hypothesesFromObservations([observation({ confidenceHint: 'high' })], 'e1');
+  if (!hypothesis) throw new Error('expected a hypothesis');
+
+  // A single low-confidence contradiction (not enough to flip straight to
+  // "contradicted") leaves contradictingObservationIds non-empty without
+  // dropping confidence below 0.2.
+  let updated = updateHypothesisWithObservation(
+    hypothesis,
+    observation({ id: 'obs-contra', confidenceHint: 'low' }),
+    false,
+  );
+  assert.notEqual(updated.status, 'contradicted');
+  assert.ok(updated.contradictingObservationIds.length > 0);
+
+  // Repeated strong supportive observations would, on their own, push
+  // confidence well above the 0.8 "supported" threshold.
+  for (let i = 0; i < 10; i++) {
+    updated = updateHypothesisWithObservation(
+      updated,
+      observation({ id: `obs-support-${i}`, confidenceHint: 'high', verified: true }),
+      true,
+    );
+  }
+  assert.ok(updated.confidence >= 0.8, 'test setup should have driven confidence back above 0.8');
+  assert.notEqual(
+    updated.status,
+    'supported',
+    'a standing, unresolved contradiction must block "supported" regardless of confidence',
+  );
+  assert.ok(updated.contradictingObservationIds.includes('obs-contra'), 'the contradiction is never silently cleared');
+});
+
 test('scoreHypothesisGroup with no memory (or empty memory) behaves exactly as before — the default is a pure no-op', () => {
   const group = { vulnClass: 'xss', assetRef: 'a', observations: [observation()] };
   const withoutMemoryArg = scoreHypothesisGroup(group);

@@ -35,6 +35,14 @@ test('recordProvenanceEdge produces a well-formed edge with provenance', () => {
   assert.equal(edge.provenance.source, 'js-intelligence');
 });
 
+test('recordProvenanceEdge carries a real sourceObservationId through when the caller supplies one, and leaves it undefined (never fabricated) when it does not', () => {
+  const withId = recordProvenanceEdge(edgeInput({ sourceObservationId: 'obs-real-123' }));
+  assert.equal(withId.sourceObservationId, 'obs-real-123');
+
+  const withoutId = recordProvenanceEdge(edgeInput());
+  assert.equal(withoutId.sourceObservationId, undefined);
+});
+
 test('save then load round-trips the provenance graph', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'hunter-provenance-'));
   try {
@@ -108,15 +116,28 @@ test('provenanceToHypotheses turns a suspicious flow into a real hypothesis, not
   assert.ok(hypotheses[0]?.statement.includes('returnUrl'));
 });
 
+test('provenanceToHypotheses carries the real supporting observation id through, rather than always reporting no evidence trail', () => {
+  const edges = [recordProvenanceEdge(edgeInput({ sourceObservationId: 'obs-real-123' }))];
+  const hypotheses = provenanceToHypotheses(edges, 'eng-1');
+  assert.deepEqual(hypotheses[0]?.supportingObservationIds, ['obs-real-123']);
+});
+
+test('provenanceToHypotheses reports no supporting observations (never fabricated) when the edges carry none', () => {
+  const edges = [recordProvenanceEdge(edgeInput())];
+  const hypotheses = provenanceToHypotheses(edges, 'eng-1');
+  assert.deepEqual(hypotheses[0]?.supportingObservationIds, []);
+});
+
 test('provenanceToHypotheses groups multiple edges into the same sink into one hypothesis', () => {
   const edges = [
-    recordProvenanceEdge(edgeInput({ sourceRef: 'returnUrl' })),
-    recordProvenanceEdge(edgeInput({ sourceRef: 'next' })),
+    recordProvenanceEdge(edgeInput({ sourceRef: 'returnUrl', sourceObservationId: 'obs-a' })),
+    recordProvenanceEdge(edgeInput({ sourceRef: 'next', sourceObservationId: 'obs-b' })),
   ];
   const hypotheses = provenanceToHypotheses(edges, 'eng-1');
   assert.equal(hypotheses.length, 1);
   assert.ok(hypotheses[0]?.statement.includes('returnUrl'));
   assert.ok(hypotheses[0]?.statement.includes('next'));
+  assert.deepEqual(new Set(hypotheses[0]?.supportingObservationIds), new Set(['obs-a', 'obs-b']));
 });
 
 test('provenanceToHypotheses produces nothing from a DOM-XSS-shaped edge into a different vulnClass', () => {

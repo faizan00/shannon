@@ -36,6 +36,7 @@
  */
 
 import { LocalSignatureDeduplicator } from '../dedup/local-dedup.js';
+import type { H1BrainDisclosedReportRecord } from '../discovery/h1-brain-provider.js';
 import { appendEvidence, createEvidenceEntry } from '../evidence/store.js';
 import { createFinding, listFindings, saveFinding, transitionFinding, withEvidence } from '../findings/lifecycle.js';
 import { LocalFileIntake } from '../intake/hackerone.js';
@@ -49,6 +50,7 @@ import {
   markActionSkipped,
   selectNextBestAction,
 } from '../reasoning/actions.js';
+import { findRelevantDisclosedReports, relevantReportMatchToObservation } from '../reasoning/disclosed-report-rag.js';
 import { hypothesesFromObservations, updateHypothesisWithObservation } from '../reasoning/hypothesis.js';
 import { DEFAULT_BUDGET, evaluateProposal, type PolicyContext, type ToolRateLimiter } from '../reasoning/policy.js';
 import {
@@ -59,7 +61,9 @@ import {
 import { compareAuthStates, type StateResponseMap } from '../recon/behavioral.js';
 import type { AuthStateHeaders } from '../recon/behavioral-live.js';
 import { correlateDiscoveries, crossSourceCorrelated } from '../recon/correlate.js';
+import { extractDependencyFingerprints } from '../recon/dependency-fingerprint.js';
 import { analyzeJavaScript } from '../recon/js-intel.js';
+import { advisoryMatchToObservation, correlateAdvisories } from '../recon/nday-advisory.js';
 import {
   classifyDiscoveryScope,
   classifyRawDiscoveryScope,
@@ -75,7 +79,12 @@ import {
   quarantineCorruptedCheckpoint,
   saveCheckpoint,
 } from '../state/checkpoint.js';
-import { loadEngagement, newEngagement, saveEngagement } from '../state/engagement-store.js';
+import {
+  loadEngagement,
+  newEngagement,
+  quarantineCorruptedEngagementState,
+  saveEngagement,
+} from '../state/engagement-store.js';
 import { appendObservations, listObservations } from '../state/observation-log.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import {
@@ -158,6 +167,8 @@ export interface AdaptiveHuntInput {
   readonly activeSources: readonly ReconSource[];
   readonly jsArtifacts: readonly JsArtifactInput[];
   readonly behavioralFixtures: readonly BehavioralFixtureInput[];
+  /** Operator-supplied disclosed-report content for semantic RAG (reasoning/disclosed-report-rag.ts) — from the same H1BrainSnapshot file used for program discovery, never fetched live by this package. Omitted or empty is a zero-cost no-op. */
+  readonly disclosedReports?: readonly H1BrainDisclosedReportRecord[];
   /** action-kind::target -> fixture, consulted for every action kind except "shannon" (see shannonOutputsByAsset). */
   readonly investigationFixtures: ReadonlyMap<string, InvestigationFixture>;
   /** assetRef -> path to a captured Shannon report.json-shaped file, ingested only when a "shannon" action targets that asset and liveShannon is not confirmed. */
@@ -336,6 +347,17 @@ export async function runAdaptiveHunt(input: AdaptiveHuntInput): Promise<Result<
   if (existingEngagement.ok) {
     engagement = existingEngagement.value;
   } else {
+    // A corrupted state.json must never be silently overwritten -- quarantine
+    // it first (never delete, stays available for forensics) and log the
+    // recovery loudly, exactly like the checkpoint recovery path just below.
+    // 'not-found' (a genuinely fresh engagement) needs no quarantine at all.
+    if (existingEngagement.error.kind === 'corrupted') {
+      const quarantineResult = await quarantineCorruptedEngagementState(input.workspaceDir, input.engagementId);
+      if (!quarantineResult.ok) return err(quarantineResult.error);
+      log.push(
+        `engagement state recovery: ${existingEngagement.error.message}; quarantined to "${quarantineResult.value ?? '(nothing to quarantine)'}" and starting a fresh engagement record rather than failing the hunt`,
+      );
+    }
     engagement = newEngagement({
       id: input.engagementId,
       programId: program.programId,
@@ -387,7 +409,22 @@ export async function runAdaptiveHunt(input: AdaptiveHuntInput): Promise<Result<
     log.push(`memory: loaded ${memory.length} prior experience entry/ies to bias hypothesis prioritization`);
   }
 
-  if (recoveringFromCorruptedCheckpoint && allObservations.length > 0) {
+  // A save between saveWorldModel and saveCheckpoint at the end of bootstrap
+  // (below) is two separate, sequential writes -- a process killed between
+  // them leaves a resume with real, durably-recorded observations but zero
+  // checkpoint hypotheses: the exact same recoverable shape as a corrupted
+  // checkpoint, just detected by "observations exist, hypotheses don't"
+  // instead of the checkpoint load having thrown. `checkpoint.round === 0`
+  // distinguishes this from a legitimate mid-hunt state where every
+  // hypothesis was genuinely resolved down to zero -- that can only happen
+  // after the round loop has actually run at least once.
+  const bootstrapSaveWasInterrupted =
+    !recoveringFromCorruptedCheckpoint &&
+    checkpoint.round === 0 &&
+    checkpoint.hypotheses.length === 0 &&
+    allObservations.length > 0;
+
+  if ((recoveringFromCorruptedCheckpoint || bootstrapSaveWasInterrupted) && allObservations.length > 0) {
     const rebuiltHypotheses = hypothesesFromObservations(allObservations, engagement.id, memory);
     checkpoint = {
       ...checkpoint,
@@ -395,11 +432,13 @@ export async function runAdaptiveHunt(input: AdaptiveHuntInput): Promise<Result<
       observationIds: allObservations.map((o) => o.id),
     };
     log.push(
-      `checkpoint recovery: rebuilt ${rebuiltHypotheses.length} hypothesis/es from ${allObservations.length} durable observation(s); round/action/decision history could not be recovered and restarts at 0`,
+      recoveringFromCorruptedCheckpoint
+        ? `checkpoint recovery: rebuilt ${rebuiltHypotheses.length} hypothesis/es from ${allObservations.length} durable observation(s); round/action/decision history could not be recovered and restarts at 0`
+        : `bootstrap recovery: found ${allObservations.length} durable observation(s) but no saved hypotheses (an interrupted save between the world model and checkpoint writes) — rebuilt ${rebuiltHypotheses.length} hypothesis/es rather than silently reporting a hunt with no findings`,
     );
   }
 
-  const isFreshHunt = worldModel.nodes.length === 0 && checkpoint.hypotheses.length === 0;
+  const isFreshHunt = allObservations.length === 0 && checkpoint.hypotheses.length === 0;
   let jsProvenanceEdges: readonly ProvenanceEdge[] = [];
 
   if (isFreshHunt) {
@@ -515,6 +554,32 @@ export async function runAdaptiveHunt(input: AdaptiveHuntInput): Promise<Result<
       `understand (js-intelligence): analyzed ${input.jsArtifacts.length} artifact(s), ${jsObservations.length} observation(s)`,
     );
 
+    // === UNDERSTAND (N-day / patch-window dependency correlation) ===
+    // Fingerprinting itself is pure/local (same already-fetched content the
+    // JS-intelligence pass above just analyzed) and always runs; only the
+    // OSV.dev advisory lookup is a real outbound network call, so only that
+    // part is gated behind `liveRecon`, exactly like every other genuine
+    // network/process call this loop makes.
+    const ndayObservations: Observation[] = [];
+    const dependencyFingerprints = input.jsArtifacts
+      .filter((artifact) => classifyDiscoveryScope(program, 'asset', artifact.assetRef) !== 'out-of-scope')
+      .flatMap((artifact) => extractDependencyFingerprints(artifact.content, artifact.assetRef));
+    if (input.liveRecon && dependencyFingerprints.length > 0) {
+      const advisoryResult = await correlateAdvisories(dependencyFingerprints, input.workspaceDir);
+      if (advisoryResult.ok) {
+        ndayObservations.push(...advisoryResult.value.map((match) => advisoryMatchToObservation(match, engagement.id)));
+      }
+      log.push(
+        advisoryResult.ok
+          ? `understand (n-day advisory): checked ${dependencyFingerprints.length} fingerprinted dependenc(ies), ${advisoryResult.value.length} advisory match(es)`
+          : `understand (n-day advisory): OSV lookup failed, skipped: ${advisoryResult.error}`,
+      );
+    } else if (dependencyFingerprints.length > 0) {
+      log.push(
+        `understand (n-day advisory): ${dependencyFingerprints.length} dependenc(ies) fingerprinted, OSV lookup skipped (liveRecon not enabled)`,
+      );
+    }
+
     // === OBSERVE (behavioral state-diffing) ===
     const behavioralObservations: Observation[] = [];
     for (const fixture of input.behavioralFixtures) {
@@ -527,7 +592,36 @@ export async function runAdaptiveHunt(input: AdaptiveHuntInput): Promise<Result<
       `observe (behavioral): compared ${input.behavioralFixtures.length} endpoint/auth-state matrix/es, ${behavioralObservations.length} observation(s)`,
     );
 
-    const bootstrapObservations = filterInScopeObservations(program, [...jsObservations, ...behavioralObservations]);
+    // === UNDERSTAND (disclosed-report semantic RAG) ===
+    // A one-time enrichment call, not a per-round decision -- always goes
+    // through router.primary (the cheap tier) directly rather than
+    // model-tier.ts:chooseModelTier, which is shaped around per-round
+    // WorldModelSnapshot candidates. Skipped entirely, zero cost, when the
+    // operator supplied no disclosed-report content.
+    const ragObservations: Observation[] = [];
+    const disclosedReports = input.disclosedReports ?? [];
+    if (disclosedReports.length > 0) {
+      const ragContextObservations = [...jsObservations, ...behavioralObservations, ...ndayObservations];
+      const ragResult = await findRelevantDisclosedReports(ragContextObservations, disclosedReports, reasoningRouter);
+      if (ragResult.ok) {
+        for (const match of ragResult.value) {
+          const observation = relevantReportMatchToObservation(match, engagement.id);
+          if (observation) ragObservations.push(observation);
+        }
+        log.push(
+          `understand (disclosed-report rag): checked ${disclosedReports.length} disclosed report(s), ${ragObservations.length} relevant match(es) folded in`,
+        );
+      } else {
+        log.push(`understand (disclosed-report rag): relevance ranking failed, skipped: ${ragResult.error}`);
+      }
+    }
+
+    const bootstrapObservations = filterInScopeObservations(program, [
+      ...jsObservations,
+      ...behavioralObservations,
+      ...ndayObservations,
+      ...ragObservations,
+    ]);
     await appendObservations(input.workspaceDir, engagement.id, bootstrapObservations);
     allObservations = [...allObservations, ...bootstrapObservations];
 
@@ -859,7 +953,13 @@ export async function runAdaptiveHunt(input: AdaptiveHuntInput): Promise<Result<
         log.push(`evidence: recorded ${evidenceEntries.length} evidence entry/entries`);
 
         // === DEDUPLICATE ===
-        const priorFindings = await listFindings(input.workspaceDir, engagement.id);
+        const priorFindingsResult = await listFindings(input.workspaceDir, engagement.id);
+        if (priorFindingsResult.corruptedFindingIds.length > 0 || priorFindingsResult.listError) {
+          log.push(
+            `dedup: ${priorFindingsResult.corruptedFindingIds.length} prior finding file(s) could not be loaded (${priorFindingsResult.corruptedFindingIds.join(', ') || priorFindingsResult.listError}) — excluded from the duplicate check rather than silently vanishing`,
+          );
+        }
+        const priorFindings = priorFindingsResult.findings;
         const dedup = new LocalSignatureDeduplicator();
         const dedupResult = dedup.checkDuplicate(finding, priorFindings);
         if (dedupResult.isDuplicate) {
@@ -919,11 +1019,16 @@ export async function runAdaptiveHunt(input: AdaptiveHuntInput): Promise<Result<
     log.push('validate: no hypothesis reached "supported" status within the round budget; no finding was created');
   }
 
-  const allFindings = await listFindings(input.workspaceDir, engagement.id);
+  const allFindingsResult = await listFindings(input.workspaceDir, engagement.id);
+  if (allFindingsResult.corruptedFindingIds.length > 0 || allFindingsResult.listError) {
+    log.push(
+      `metrics: ${allFindingsResult.corruptedFindingIds.length} finding file(s) could not be loaded (${allFindingsResult.corruptedFindingIds.join(', ') || allFindingsResult.listError}) — excluded from recon metrics rather than silently vanishing`,
+    );
+  }
   const metrics = computeReconMetrics({
     worldModel,
     hypotheses: checkpoint.hypotheses,
-    findings: allFindings,
+    findings: allFindingsResult.findings,
     huntStartedAt: checkpoint.startedAt,
   });
 

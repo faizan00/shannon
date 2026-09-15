@@ -8,7 +8,14 @@
  * model-backed provider is configured or when one fails.
  */
 
-import type { ActionProposal, HypothesisProposal, Observation, WorldModelSnapshot } from '../types.js';
+import type { H1BrainDisclosedReportRecord } from '../discovery/h1-brain-provider.js';
+import type {
+  ActionProposal,
+  HypothesisProposal,
+  Observation,
+  RelevantReportProposal,
+  WorldModelSnapshot,
+} from '../types.js';
 import { selectNextBestAction } from './actions.js';
 import { hypothesesFromObservations } from './hypothesis.js';
 import type { ReasoningProvider } from './provider.js';
@@ -57,5 +64,13 @@ export class HeuristicReasoningProvider implements ReasoningProvider {
         supportingObservationIds: h.supportingObservationIds,
       })),
     );
+  }
+
+  /** No real semantic-relevance capability without a model — honestly returns nothing rather than a fake keyword-matched guess. */
+  findRelevantReports(
+    _observations: readonly Observation[],
+    _disclosedReports: readonly H1BrainDisclosedReportRecord[],
+  ): Promise<readonly RelevantReportProposal[]> {
+    return Promise.resolve([]);
   }
 }

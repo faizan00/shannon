@@ -47,6 +47,11 @@ const ACTION_KIND_BY_VULN_CLASS: Readonly<Record<string, ActionKind>> = {
   'js-intel-sourcemap-reference': 'js-intelligence',
   'js-intel-chunk-reference': 'js-intelligence',
   'js-intel-client-state-transition': 'behavioral-diff',
+  // A version-match lead needs to be confirmed live before it's a finding
+  // (see reasoning/hypothesis.ts's evidence requirements) -- re-probing the
+  // live target is the mechanical next step, same action kind as ssrf/
+  // open-redirect above.
+  'known-vulnerable-dependency': 'active-recon',
 };
 
 /** Exported so `reasoning/experiment.ts` prices a designed experiment the same way a plain hypothesis-driven action is priced — one cost table, not two. */

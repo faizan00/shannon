@@ -18,8 +18,9 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { writeFileAtomic } from '../state/atomic-write.js';
 import { err, type Hypothesis, ok, type Provenance, type Result } from '../types.js';
 
 export type ProvenanceSourceKind =
@@ -60,6 +61,8 @@ export interface ProvenanceEdge {
   readonly round: number | undefined;
   readonly verificationState: ProvenanceVerificationState;
   readonly recordedAt: string;
+  /** The real `Observation.id` this edge was derived from, when known — see `NewProvenanceEdgeInput`. */
+  readonly sourceObservationId: string | undefined;
 }
 
 export interface NewProvenanceEdgeInput {
@@ -74,6 +77,8 @@ export interface NewProvenanceEdgeInput {
   readonly confidence: number;
   readonly round?: number;
   readonly verificationState?: ProvenanceVerificationState;
+  /** The real `Observation.id` this edge was derived from, when the caller has one on hand (every `recon/js-intel.ts` call site does) — threaded through to `provenanceToHypotheses`'s `supportingObservationIds` so a research-track hypothesis carries a real evidence trail instead of always being empty. Omitted (never fabricated) when no real observation backs this specific edge. */
+  readonly sourceObservationId?: string;
 }
 
 export function recordProvenanceEdge(input: NewProvenanceEdgeInput): ProvenanceEdge {
@@ -91,6 +96,7 @@ export function recordProvenanceEdge(input: NewProvenanceEdgeInput): ProvenanceE
     round: input.round,
     verificationState: input.verificationState ?? 'unverified',
     recordedAt: now,
+    sourceObservationId: input.sourceObservationId,
   };
 }
 
@@ -104,8 +110,7 @@ export async function saveProvenanceGraph(
   edges: readonly ProvenanceEdge[],
 ): Promise<void> {
   const filePath = provenanceFilePath(workspaceDir, engagementId);
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, `${JSON.stringify(edges, null, 2)}\n`, 'utf8');
+  await writeFileAtomic(filePath, `${JSON.stringify(edges, null, 2)}\n`);
 }
 
 export async function loadProvenanceGraph(
@@ -229,13 +234,16 @@ export function provenanceToHypotheses(edges: readonly ProvenanceEdge[], engagem
   return Array.from(groups.entries()).map(([key, group]) => {
     const [vulnClass] = key.split('::');
     const confidence = Number((group.reduce((s, g) => s + g.confidence, 0) / group.length).toFixed(4));
+    const supportingObservationIds = Array.from(
+      new Set(group.map((g) => g.edge.sourceObservationId).filter((id): id is string => id !== undefined)),
+    );
     return {
       id: `hyp-${randomUUID()}`,
       engagementId,
       statement: `Data-flow analysis: ${group.map((g) => g.statement).join('; ')}`,
       vulnClass: vulnClass ?? 'provenance-tainted-flow',
       assetRef: group[0]?.edge.sinkRef ?? '',
-      supportingObservationIds: [],
+      supportingObservationIds,
       contradictingObservationIds: [],
       potentialImpact: confidence >= 0.7 ? 'high' : confidence >= 0.5 ? 'medium' : 'low',
       confidence,

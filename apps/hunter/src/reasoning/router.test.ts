@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { ActionProposal, WorldModelSnapshot } from '../types.js';
+import type { ActionProposal, HuntAction, Hypothesis, WorldModelSnapshot } from '../types.js';
 import { ClaudeCodeReasoningProvider } from './claude-code-provider.js';
 import { ClaudeReasoningProvider } from './claude-provider.js';
 import { HeuristicReasoningProvider } from './heuristic-provider.js';
 import type { ReasoningProvider } from './provider.js';
-import { createReasoningProvider, selectNextBestActionWithFallback } from './router.js';
+import { createReasoningProvider, resolveTierModel, selectNextBestActionWithFallback } from './router.js';
 
 const EMPTY_SNAPSHOT: WorldModelSnapshot = {
   programId: 'p1',
@@ -18,17 +18,90 @@ const EMPTY_SNAPSHOT: WorldModelSnapshot = {
   round: 1,
 };
 
+function shannonAction(): HuntAction {
+  return {
+    id: 'action-1',
+    engagementId: 'e1',
+    kind: 'shannon',
+    targetRef: 'https://app.example.com',
+    hypothesisId: 'hyp-1',
+    rationale: 'test',
+    expectedInformationGain: 0.5,
+    cost: 0.6,
+    status: 'queued',
+    createdAt: new Date().toISOString(),
+    completedAt: undefined,
+    resultSummary: undefined,
+  };
+}
+
+const CRITICAL_SNAPSHOT: WorldModelSnapshot = { ...EMPTY_SNAPSHOT, candidateActions: [shannonAction()] };
+
+function highImpactHypothesisAction(): HuntAction {
+  return {
+    id: 'action-2',
+    engagementId: 'e1',
+    kind: 'active-recon',
+    targetRef: 'https://app.example.com',
+    hypothesisId: 'hyp-2',
+    rationale: 'test',
+    expectedInformationGain: 0.5,
+    cost: 0.3,
+    status: 'queued',
+    createdAt: new Date().toISOString(),
+    completedAt: undefined,
+    resultSummary: undefined,
+  };
+}
+
+function highImpactHypothesis(): Hypothesis {
+  return {
+    id: 'hyp-2',
+    engagementId: 'e1',
+    statement: 'test',
+    vulnClass: 'authz',
+    assetRef: 'https://app.example.com',
+    supportingObservationIds: [],
+    contradictingObservationIds: [],
+    potentialImpact: 'high',
+    confidence: 0.5,
+    priorityScore: 0.5,
+    informationGain: 0.5,
+    requiredEvidence: [],
+    nextInvestigation: 'test',
+    status: 'open',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+const PREMIUM_SNAPSHOT: WorldModelSnapshot = {
+  ...EMPTY_SNAPSHOT,
+  candidateActions: [highImpactHypothesisAction()],
+  hypotheses: [highImpactHypothesis()],
+};
+
 test('createReasoningProvider picks the heuristic provider outright when nothing is configured', async () => {
   const router = await createReasoningProvider({});
   assert.equal(router.configuredSource, 'heuristic');
   assert.ok(router.primary instanceof HeuristicReasoningProvider);
   assert.equal(router.primary, router.fallback);
+  assert.equal(router.premium, router.fallback);
+  assert.equal(router.critical, router.fallback);
 });
 
-test('createReasoningProvider picks Claude (direct API) as primary, with heuristic as fallback, when an API key is configured', async () => {
+test('createReasoningProvider picks Claude (direct API) as primary/premium/critical, with heuristic as fallback, when an API key is configured', async () => {
   const router = await createReasoningProvider({ ANTHROPIC_API_KEY: 'fake-key' });
   assert.equal(router.configuredSource, 'claude');
   assert.ok(router.primary instanceof ClaudeReasoningProvider);
+  assert.ok(router.premium instanceof ClaudeReasoningProvider);
+  assert.ok(router.critical instanceof ClaudeReasoningProvider);
+  assert.notEqual(router.primary, router.premium, 'the cheap and premium tiers must be distinct provider instances');
+  assert.notEqual(
+    router.premium,
+    router.critical,
+    'the premium and critical tiers must be distinct provider instances',
+  );
   assert.ok(router.fallback instanceof HeuristicReasoningProvider);
 });
 
@@ -50,7 +123,7 @@ test('createReasoningProvider falls back to heuristic when HUNTER_USE_CLAUDE_COD
   assert.equal(router.configuredSource, 'heuristic');
 });
 
-test('createReasoningProvider selects ClaudeCodeReasoningProvider when HUNTER_USE_CLAUDE_CODE=1 and the binary genuinely exists', async () => {
+test('createReasoningProvider selects ClaudeCodeReasoningProvider as primary/premium/critical when HUNTER_USE_CLAUDE_CODE=1 and the binary genuinely exists', async () => {
   // Uses "sh" (present on every POSIX box, exactly like other tests in this
   // package use it to stand in for "some real binary") purely to prove the
   // opt-in + presence-check wiring, not to actually invoke Claude Code here.
@@ -60,6 +133,14 @@ test('createReasoningProvider selects ClaudeCodeReasoningProvider when HUNTER_US
   });
   assert.equal(router.configuredSource, 'claude');
   assert.ok(router.primary instanceof ClaudeCodeReasoningProvider);
+  assert.ok(router.premium instanceof ClaudeCodeReasoningProvider);
+  assert.ok(router.critical instanceof ClaudeCodeReasoningProvider);
+  assert.notEqual(router.primary, router.premium, 'the cheap and premium tiers must be distinct provider instances');
+  assert.notEqual(
+    router.premium,
+    router.critical,
+    'the premium and critical tiers must be distinct provider instances',
+  );
   assert.ok(router.fallback instanceof HeuristicReasoningProvider);
 });
 
@@ -72,6 +153,28 @@ test('ANTHROPIC_API_KEY still takes precedence over HUNTER_USE_CLAUDE_CODE when 
   assert.ok(router.primary instanceof ClaudeReasoningProvider);
 });
 
+// === Cost-tiered model resolution (resolveTierModel back-compat precedence) ===
+
+test('resolveTierModel prefers the tier-specific env var over everything else', () => {
+  const model = resolveTierModel(
+    { HUNTER_REASONING_MODEL_CHEAP: 'tier-specific', HUNTER_REASONING_MODEL: 'legacy' },
+    'HUNTER_REASONING_MODEL_CHEAP',
+    'fallback-default',
+  );
+  assert.equal(model, 'tier-specific');
+});
+
+test('resolveTierModel falls back to the legacy single-model var when the tier-specific one is unset -- both tiers keep an existing single-model config working unchanged', () => {
+  const env = { HUNTER_REASONING_MODEL: 'legacy-model' };
+  assert.equal(resolveTierModel(env, 'HUNTER_REASONING_MODEL_CHEAP', 'fallback-default'), 'legacy-model');
+  assert.equal(resolveTierModel(env, 'HUNTER_REASONING_MODEL_PREMIUM', undefined), 'legacy-model');
+});
+
+test('resolveTierModel falls back to the tier default when nothing is configured', () => {
+  assert.equal(resolveTierModel({}, 'HUNTER_REASONING_MODEL_CHEAP', 'fallback-default'), 'fallback-default');
+  assert.equal(resolveTierModel({}, 'HUNTER_REASONING_MODEL_PREMIUM', undefined), undefined);
+});
+
 class FailingProvider implements ReasoningProvider {
   readonly source = 'claude' as const;
   selectNextBestAction(): Promise<ActionProposal | undefined> {
@@ -80,11 +183,20 @@ class FailingProvider implements ReasoningProvider {
   generateHypotheses(): Promise<readonly []> {
     return Promise.resolve([]);
   }
+  findRelevantReports(): Promise<readonly []> {
+    return Promise.resolve([]);
+  }
 }
 
-test('selectNextBestActionWithFallback falls back to the heuristic provider when the primary throws, and reports why', async () => {
+test('selectNextBestActionWithFallback falls back to the heuristic provider when the tiered provider throws, and reports why', async () => {
   const result = await selectNextBestActionWithFallback(
-    { primary: new FailingProvider(), fallback: new HeuristicReasoningProvider(), configuredSource: 'claude' },
+    {
+      primary: new FailingProvider(),
+      premium: new FailingProvider(),
+      critical: new FailingProvider(),
+      fallback: new HeuristicReasoningProvider(),
+      configuredSource: 'claude',
+    },
     EMPTY_SNAPSHOT,
   );
   assert.equal(result.source, 'heuristic');
@@ -94,9 +206,61 @@ test('selectNextBestActionWithFallback falls back to the heuristic provider when
 test('selectNextBestActionWithFallback uses the primary directly when it succeeds', async () => {
   const heuristic = new HeuristicReasoningProvider();
   const result = await selectNextBestActionWithFallback(
-    { primary: heuristic, fallback: heuristic, configuredSource: 'heuristic' },
+    { primary: heuristic, premium: heuristic, critical: heuristic, fallback: heuristic, configuredSource: 'heuristic' },
     EMPTY_SNAPSHOT,
   );
   assert.equal(result.source, 'heuristic');
   assert.equal(result.fallbackReason, undefined);
+});
+
+// === Cost-tiered dispatch: selectNextBestActionWithFallback picks the tier chooseModelTier selects ===
+
+class StubProvider implements ReasoningProvider {
+  readonly source = 'claude' as const;
+  constructor(private readonly label: string) {}
+  selectNextBestAction(): Promise<ActionProposal | undefined> {
+    return Promise.resolve({
+      kind: 'manual-review',
+      targetRef: this.label,
+      hypothesisId: 'hyp-1',
+      whyThisAction: this.label,
+      hypothesisTested: this.label,
+      uncertaintyReduced: this.label,
+      confirmingObservation: this.label,
+      contradictingObservation: this.label,
+      nextStepIfConfirmed: this.label,
+      nextStepIfContradicted: this.label,
+    });
+  }
+  generateHypotheses(): Promise<readonly []> {
+    return Promise.resolve([]);
+  }
+  findRelevantReports(): Promise<readonly []> {
+    return Promise.resolve([]);
+  }
+}
+
+function threeTierRouter() {
+  return {
+    primary: new StubProvider('cheap'),
+    premium: new StubProvider('premium'),
+    critical: new StubProvider('critical'),
+    fallback: new HeuristicReasoningProvider(),
+    configuredSource: 'claude' as const,
+  };
+}
+
+test('selectNextBestActionWithFallback dispatches to the cheap tier for an ordinary round', async () => {
+  const result = await selectNextBestActionWithFallback(threeTierRouter(), EMPTY_SNAPSHOT);
+  assert.equal(result.proposal?.targetRef, 'cheap');
+});
+
+test('selectNextBestActionWithFallback dispatches to the premium tier when a high-impact hypothesis is in play', async () => {
+  const result = await selectNextBestActionWithFallback(threeTierRouter(), PREMIUM_SNAPSHOT);
+  assert.equal(result.proposal?.targetRef, 'premium');
+});
+
+test('selectNextBestActionWithFallback dispatches to the critical tier when the round has a shannon-kind candidate', async () => {
+  const result = await selectNextBestActionWithFallback(threeTierRouter(), CRITICAL_SNAPSHOT);
+  assert.equal(result.proposal?.targetRef, 'critical');
 });

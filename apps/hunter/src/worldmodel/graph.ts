@@ -18,8 +18,9 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { writeFileAtomic } from '../state/atomic-write.js';
 import {
   err,
   ok,
@@ -44,8 +45,7 @@ export function worldModelFilePath(workspaceDir: string, engagementId: string): 
 
 export async function saveWorldModel(workspaceDir: string, engagementId: string, model: WorldModel): Promise<void> {
   const filePath = worldModelFilePath(workspaceDir, engagementId);
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, `${JSON.stringify(model, null, 2)}\n`, 'utf8');
+  await writeFileAtomic(filePath, `${JSON.stringify(model, null, 2)}\n`);
 }
 
 export async function loadWorldModel(workspaceDir: string, engagementId: string): Promise<Result<WorldModel, string>> {

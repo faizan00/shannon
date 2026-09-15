@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -97,10 +97,13 @@ test('saveFinding then loadFinding round-trips', async () => {
   }
 });
 
-test('listFindings returns an empty array when none exist, and all saved findings otherwise', async () => {
+test('listFindings returns an empty result when none exist, and all saved findings otherwise', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'hunter-finding-list-test-'));
   try {
-    assert.deepEqual(await listFindings(dir, 'e1'), []);
+    const empty = await listFindings(dir, 'e1');
+    assert.deepEqual(empty.findings, []);
+    assert.deepEqual(empty.corruptedFindingIds, []);
+    assert.equal(empty.listError, undefined);
 
     const a = finding();
     const b = finding();
@@ -108,8 +111,27 @@ test('listFindings returns an empty array when none exist, and all saved finding
     await saveFinding(dir, b);
 
     const all = await listFindings(dir, 'e1');
-    assert.equal(all.length, 2);
-    assert.deepEqual(all.map((f) => f.id).sort(), [a.id, b.id].sort());
+    assert.equal(all.findings.length, 2);
+    assert.deepEqual(all.findings.map((f) => f.id).sort(), [a.id, b.id].sort());
+    assert.deepEqual(all.corruptedFindingIds, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('listFindings surfaces a corrupted finding file by id rather than silently dropping it', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hunter-finding-list-corrupt-test-'));
+  try {
+    const good = finding();
+    await saveFinding(dir, good);
+
+    const findingsDir = join(dir, 'engagements', 'e1', 'findings');
+    await writeFile(join(findingsDir, 'corrupted-finding.json'), '{ not valid json', 'utf8');
+
+    const result = await listFindings(dir, 'e1');
+    assert.equal(result.findings.length, 1);
+    assert.equal(result.findings[0]?.id, good.id);
+    assert.deepEqual(result.corruptedFindingIds, ['corrupted-finding']);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

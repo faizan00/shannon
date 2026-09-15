@@ -15,6 +15,7 @@ import {
   type HypothesisProposal,
   type ImpactLevel,
   ok,
+  type RelevantReportProposal,
   type Result,
 } from '../types.js';
 
@@ -112,5 +113,29 @@ export function validateHypothesisProposal(value: unknown): Result<HypothesisPro
     requiredEvidence: value.requiredEvidence as readonly string[],
     nextInvestigation: value.nextInvestigation as string,
     supportingObservationIds: value.supportingObservationIds as readonly string[],
+  });
+}
+
+export function validateRelevantReportProposal(value: unknown): Result<RelevantReportProposal, string> {
+  if (!isRecord(value)) {
+    return err('relevant-report proposal must be a JSON object');
+  }
+  if (typeof value.reportId !== 'number' || !Number.isFinite(value.reportId)) {
+    return err('relevant-report proposal "reportId" must be a number');
+  }
+  if (!isNonEmptyString(value.relatedAssetRef)) {
+    return err('relevant-report proposal "relatedAssetRef" must be a non-empty string');
+  }
+  if (!isNonEmptyString(value.relevanceRationale)) {
+    return err('relevant-report proposal "relevanceRationale" must be a non-empty string');
+  }
+  if (!isNonEmptyString(value.suggestedNextInvestigation)) {
+    return err('relevant-report proposal "suggestedNextInvestigation" must be a non-empty string');
+  }
+  return ok({
+    reportId: value.reportId,
+    relatedAssetRef: value.relatedAssetRef as string,
+    relevanceRationale: value.relevanceRationale as string,
+    suggestedNextInvestigation: value.suggestedNextInvestigation as string,
   });
 }
